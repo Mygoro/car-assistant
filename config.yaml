@@ -1,0 +1,36 @@
+wake_word:
+  model_path: "wake_word/hey_claude_ko.ppn"
+  sensitivity: 0.5
+
+stt:
+  model_size: "large-v3"
+  device: "cpu"
+  compute_type: "int8"
+  language: "ko"
+  initial_prompt: "디지툴, AI Agents, 연세대학교, LearnUs, Notion, Krita, MCP"
+
+vad:
+  threshold: 0.5
+  tail_ms: 4000
+  max_duration_s: 30
+
+llm:
+  default_provider: "anthropic"
+  default_model: "claude-sonnet-4-6"
+  max_tokens: 1000
+  history_turns: 10
+
+intent_routing:
+  "note.create": "anthropic/claude-sonnet-4-6"
+  "calendar.read": "anthropic/claude-haiku-4-5-20251001"
+  "calendar.write": "anthropic/claude-sonnet-4-6"
+  "research": "anthropic/claude-sonnet-4-6"
+  "simple_qa": "anthropic/claude-haiku-4-5-20251001"
+  "offline_fallback": "ollama/qwen2.5:14b"
+
+tts:
+  provider: "elevenlabs"
+  model: "eleven_flash_v2_5"
+  chunk_size: 1024
+
+filler_threshold_ms: 800

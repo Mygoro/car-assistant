@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+archive/audio/debug/
+silero_vad.onnx
+wake_word/*.ppn
