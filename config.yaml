@@ -1,6 +1,6 @@
 wake_word:
-  model_path: "wake_word/hey_claude_ko.ppn"
-  sensitivity: 0.5
+  model_path: "wake_word/crank_otto.onnx"
+  threshold: 0.85
 
 stt:
   model_size: "large-v3"

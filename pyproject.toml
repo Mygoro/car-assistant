@@ -5,7 +5,7 @@ requires-python = ">=3.11"
 dependencies = [
     "discord.py>=2.4.0",
     "discord-ext-voice-recv>=0.5.0",
-    "pvporcupine>=4.0.0",
+    "openwakeword>=0.6.0",
     "faster-whisper>=1.0.0",
     "onnxruntime>=1.18.0",
     "anthropic>=0.40.0",
@@ -15,4 +15,6 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0.0",
     "ulid-py>=1.1.0",
+    "onnx>=1.21.0",
+    "sounddevice>=0.5.5",
 ]

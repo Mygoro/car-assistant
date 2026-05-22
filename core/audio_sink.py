@@ -11,6 +11,9 @@ from discord.ext.voice_recv.opus import VoiceData
 
 DEBUG_DIR = Path("archive/audio/debug")
 
+# 마지막 패킷으로부터 이 시간(초) 이상 침묵이면 발화 종료로 판정 → WAV 저장
+SILENCE_FLUSH_SEC = 2.0
+
 
 class CarAudioSink(AudioSink):
     """Receives audio from OWNER_USER_ID, downsamples to 16kHz mono, pushes to queue."""
@@ -24,7 +27,10 @@ class CarAudioSink(AudioSink):
 
         # Debug WAV accumulation (Phase 1 only)
         self._debug_buf: list[bytes] = []
-        self._last_save = time.monotonic()
+        self._last_packet_time: float = 0.0   # 마지막 패킷 수신 시각
+
+        # 백그라운드 flush 태스크 시작 (write() 안에서 flush 하지 않음)
+        asyncio.run_coroutine_threadsafe(self._flush_watcher(), loop)
 
     def wants_opus(self) -> bool:
         return False  # request decoded PCM from the library
@@ -34,8 +40,7 @@ class CarAudioSink(AudioSink):
             return
 
         pcm_48k_stereo: bytes = data.pcm
-        n = len(pcm_48k_stereo)
-        print(f"AUDIO_RECEIVED: {n} bytes")
+        print(f"AUDIO_RECEIVED: {len(pcm_48k_stereo)} bytes  t={time.monotonic():.3f}")
 
         # Stereo → mono: average left and right channels
         samples = np.frombuffer(pcm_48k_stereo, dtype=np.int16)
@@ -51,15 +56,23 @@ class CarAudioSink(AudioSink):
         self._loop.call_soon_threadsafe(self._pcm_queue.put_nowait, chunk)
 
         self._debug_buf.append(pcm_16k)
-        if time.monotonic() - self._last_save >= 5.0:
-            asyncio.run_coroutine_threadsafe(self._flush_debug_wav(), self._loop)
-            self._last_save = time.monotonic()
+        self._last_packet_time = time.monotonic()
+
+    async def _flush_watcher(self):
+        """침묵 감지 후 WAV 저장. write()와 분리되어 독립적으로 동작."""
+        while True:
+            await asyncio.sleep(0.5)
+            if not self._debug_buf:
+                continue
+            silence = time.monotonic() - self._last_packet_time
+            if silence >= SILENCE_FLUSH_SEC:
+                await self._flush_debug_wav()
 
     async def _flush_debug_wav(self):
         if not self._debug_buf:
             return
-        buf = b"".join(self._debug_buf)
-        self._debug_buf = []
+        buf_to_save, self._debug_buf = self._debug_buf, []
+        buf = b"".join(buf_to_save)
         DEBUG_DIR.mkdir(parents=True, exist_ok=True)
         path = DEBUG_DIR / f"debug_audio_{int(time.time())}.wav"
         with wave.open(str(path), "wb") as wf:
@@ -67,7 +80,8 @@ class CarAudioSink(AudioSink):
             wf.setsampwidth(2)
             wf.setframerate(16000)
             wf.writeframes(buf)
-        print(f"DEBUG_WAV saved: {path}")
+        duration = len(buf) / (16000 * 2)
+        print(f"DEBUG_WAV saved: {path.name}  ({duration:.2f}s)")
 
     def cleanup(self):
-        pass
+        asyncio.run_coroutine_threadsafe(self._flush_debug_wav(), self._loop)
