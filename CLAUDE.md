@@ -24,11 +24,12 @@
 - **완료**
   - Phase 0 — Discord 봇 기초 (자동 접속, 재접속 watchdog)
   - Phase 1 — 오디오 수신 및 저장 (DAVE E2E 패치 적용, WAV 디버그 검증)
+  - Phase 2 — Wake Word 게이트 (크랭크 오토, openwakeword, threshold=0.85, CONFIRM_FRAMES=1)
+  - Phase 3 — STT 통합 (Silero VAD 8kHz + faster-whisper large-v3, 품질 검증 통과)
   - 전시 로드맵 설계 (2026-06-02 전시 + 2026-06-09 문서 제출)
-- **진행 중**
-  - Phase 2 — Wake Word 게이트 (openwakeword 기반, wake word: "hey otto")
-- **다음**
-  - Phase 2 품질 검증 통과 후 Phase 3 (STT) 진입
+- **다음 (세션 시작 시 반드시)**
+  1. **데스크탑 이식** — `git clone` → `uv sync` → `.env` → config.yaml `device: cuda` / `compute_type: int8_float16` → `uv run bot.py` → 동작 확인
+  2. **Phase 4** — LLM 텍스트 응답 (implementation-manual.md Phase 4 섹션)
 
 ---
 

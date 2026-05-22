@@ -8,8 +8,32 @@ Byunghun Kwon · 2022195171
 ### 현재 상태 요약
 - **Phase 0 완료** — Discord 봇 기초, 자동 접속, 재접속 watchdog
 - **Phase 1 완료** — 오디오 수신 및 저장 (DAVE E2E 패치, WAV 디버그 검증)
-- **Phase 2 진행 중** — Wake word 게이트. 엔진 구현 완료, wake word를 "hey otto" → **"크랭크 오토"로 피벗** (2026-05-22)
-- **개발 환경**: CPU-only 노트북. 추후 NVIDIA GPU 데스크탑으로 마이그레이션 예정
+- **Phase 2 완료** — Wake word 게이트 (크랭크 오토, openwakeword, threshold=0.85, CONFIRM_FRAMES=1)
+- **Phase 3 완료** — STT 통합 (Silero VAD 8kHz, faster-whisper large-v3, capture_queue 분리, MIN_SPEECH 가드)
+- **다음 작업**: **데스크탑 이식 → Phase 4 (LLM)**
+- **개발 환경**: CPU-only 노트북 → 데스크탑 이식 대기 중
+
+---
+
+### ⚡ 다음 세션 시작 지점 (2026-05-23 이후)
+
+**Step 1 — 데스크탑 이식** (노트북 → NVIDIA GPU 데스크탑)
+```
+git clone https://github.com/Mygoro/car-assistant.git
+cd car-assistant
+uv sync
+cp .env.example .env   # 또는 노트북 .env 내용 복사
+```
+`config.yaml` 두 줄 수정:
+```yaml
+stt:
+  device: "cuda"           # "cpu" → "cuda"
+  compute_type: "int8_float16"  # "int8" → "int8_float16"
+```
+`uv run bot.py` 실행 후 Discord에서 "크랭크 오토" 테스트 → STT 응답 1-2초 이내 확인
+
+**Step 2 — Phase 4 시작**
+`docs/implementation-manual.md` Phase 4 섹션 읽고 구현 시작
 
 ### 확정된 아키텍처
 ```
