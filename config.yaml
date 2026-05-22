@@ -10,8 +10,8 @@ stt:
   initial_prompt: "디지툴, AI Agents, 연세대학교, LearnUs, Notion, Krita, MCP"
 
 vad:
-  threshold: 0.5
-  tail_ms: 4000
+  threshold: 0.3
+  tail_ms: 3000
   max_duration_s: 30
 
 llm:

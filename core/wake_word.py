@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 
 _CHUNK = 1280        # 80ms at 16kHz
 # 연속 N프레임이 threshold를 넘어야 감지 확정 — 단발 노이즈/오탐 차단
-_CONFIRM_FRAMES = 2  # 2 × 80ms = 160ms 지속 필요
+_CONFIRM_FRAMES = 1  # 단발 고신뢰 감지
 
 
 class WakeWordDetector:

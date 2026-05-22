@@ -1,8 +1,11 @@
 import asyncio
 import audioop
+import logging
 import os
 import time
 import wave
+
+log = logging.getLogger(__name__)
 from pathlib import Path
 
 import numpy as np
@@ -40,7 +43,6 @@ class CarAudioSink(AudioSink):
             return
 
         pcm_48k_stereo: bytes = data.pcm
-        print(f"AUDIO_RECEIVED: {len(pcm_48k_stereo)} bytes  t={time.monotonic():.3f}")
 
         # Stereo → mono: average left and right channels
         samples = np.frombuffer(pcm_48k_stereo, dtype=np.int16)
@@ -81,7 +83,7 @@ class CarAudioSink(AudioSink):
             wf.setframerate(16000)
             wf.writeframes(buf)
         duration = len(buf) / (16000 * 2)
-        print(f"DEBUG_WAV saved: {path.name}  ({duration:.2f}s)")
+        log.debug("DEBUG_WAV saved: %s  (%.2fs)", path.name, duration)
 
     def cleanup(self):
         asyncio.run_coroutine_threadsafe(self._flush_debug_wav(), self._loop)

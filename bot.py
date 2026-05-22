@@ -17,12 +17,21 @@ from discord.ext.voice_recv.router import PacketRouter
 from dotenv import load_dotenv
 
 from core.audio_sink import CarAudioSink
+from core.stt import STTEngine
+from core.vad import SileroVAD
 from core.wake_word import WakeWordDetector
 
 load_dotenv()
 
-log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
+log = logging.getLogger(__name__)
+
+# 핵심 이벤트만 별도 파일에 기록 (wake word, transcript, 오류)
+_event_handler = logging.FileHandler("otto_events.log", encoding="utf-8")
+_event_handler.setLevel(logging.INFO)
+_event_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+log.addHandler(_event_handler)
 
 with open("config.yaml", encoding="utf-8") as _f:
     _cfg = yaml.safe_load(_f)
@@ -30,6 +39,14 @@ with open("config.yaml", encoding="utf-8") as _f:
 wake_detector: WakeWordDetector = WakeWordDetector(
     model_path=_cfg["wake_word"]["model_path"],
     threshold=_cfg["wake_word"]["threshold"],
+)
+
+stt = STTEngine(
+    model_size=_cfg["stt"]["model_size"],
+    device=_cfg["stt"]["device"],
+    compute_type=_cfg["stt"]["compute_type"],
+    language=_cfg["stt"]["language"],
+    initial_prompt=_cfg["stt"]["initial_prompt"],
 )
 
 
@@ -91,6 +108,7 @@ intents.message_content = True  # prefix 명령어 수신에 필요 (Developer P
 bot = commands.Bot(command_prefix="!", intents=intents)
 voice_client: voice_recv.VoiceRecvClient | None = None
 pcm_queue: asyncio.Queue = asyncio.Queue()
+capture_queue: asyncio.Queue = asyncio.Queue()
 
 
 @bot.event
@@ -114,11 +132,11 @@ async def audio_processor():
                 if await wake_detector.process(chunk):
                     log.info("WAKE WORD DETECTED")
                     _state = BotState.LISTENING
+                    wake_detector.pause()
                     asyncio.create_task(_notify_wake_word())
-                    # Phase 3 will replace this stub with VAD + STT capture
-                    asyncio.create_task(_listening_stub())
-            elif _state == BotState.LISTENING:
-                pass  # Phase 3: VAD + capture buffer will be added here
+                    asyncio.create_task(_capture_and_transcribe())
+            elif _state in (BotState.LISTENING, BotState.PROCESSING):
+                capture_queue.put_nowait(chunk)  # 캡처 함수로 전달
         except Exception:
             log.exception("audio_processor error")
 
@@ -132,12 +150,92 @@ async def _notify_wake_word():
         await ch.send("[WAKE WORD] 크랭크 오토 감지됨")
 
 
-async def _listening_stub():
-    """Phase 2 stub: return to IDLE after 2s so repeated detections are testable."""
+async def _capture_and_transcribe():
+    """LISTENING: VAD로 발화 캡처 → STT → Discord 게시."""
     global _state
-    await asyncio.sleep(2.0)
-    if _state == BotState.LISTENING:
+
+    vad = SileroVAD(threshold=_cfg["vad"]["threshold"])
+    tail_frames = int(_cfg["vad"]["tail_ms"] / 32)      # 32ms per VAD chunk
+    max_frames  = int(_cfg["vad"]["max_duration_s"] * 1000 / 32)
+
+    capture_buf: list[np.ndarray] = []
+    vad_buf = np.array([], dtype=np.int16)
+    silent_frames = 0
+    total_frames  = 0
+    speech_started = False
+    consec_speech = 0          # 연속 speech 프레임 수
+    MIN_SPEECH = 5             # 5 × 32ms = 160ms 이상 연속 speech여야 진짜 발화
+    pre_speech_frames = 0
+    pre_speech_limit = int(8000 / 32)  # 8초 안에 말 시작 안 하면 포기
+    done = False
+
+    while not done:
+        try:
+            chunk = await asyncio.wait_for(capture_queue.get(), timeout=15.0)
+        except asyncio.TimeoutError:
+            log.warning("Capture timeout — no audio received")
+            break
+
+        capture_buf.append(chunk)
+        vad_buf = np.concatenate([vad_buf, chunk])
+
+        while len(vad_buf) >= 512:
+            frame, vad_buf = vad_buf[:512], vad_buf[512:]
+            total_frames += 1
+            if vad.is_speech(frame):
+                consec_speech += 1
+                silent_frames = 0
+                pre_speech_frames = 0
+                if consec_speech >= MIN_SPEECH:
+                    speech_started = True
+            elif speech_started:
+                silent_frames += 1
+                consec_speech = 0
+            else:
+                consec_speech = 0
+                pre_speech_frames += 1
+                if pre_speech_frames >= pre_speech_limit:
+                    log.warning("No speech detected within 8s — aborting capture")
+                    capture_buf.clear()  # STT 실행 안 하도록 비움
+                    done = True
+                    break
+            if speech_started and silent_frames >= tail_frames:
+                done = True
+                break
+            if total_frames >= max_frames:
+                done = True
+                break
+
+    try:
+        if capture_buf:
+            audio = np.concatenate(capture_buf)
+            log.info("Captured %.1fs — running STT...", len(audio) / 16000)
+            _state = BotState.PROCESSING
+            try:
+                transcript = await stt.transcribe(audio)
+            except Exception:
+                log.exception("STT error")
+                transcript = ""
+            if transcript:
+                log.info("Transcript: %s", transcript)
+                await _post_transcript(transcript)
+            else:
+                log.info("STT returned empty transcript")
+    finally:
+        # 다음 캡처를 위해 잔여 큐 비우기
+        while not capture_queue.empty():
+            capture_queue.get_nowait()
         _state = BotState.IDLE
+        wake_detector.resume()
+
+
+async def _post_transcript(transcript: str):
+    ch_id = os.environ.get("DISCORD_TEXT_CHANNEL_ID")
+    if not ch_id:
+        return
+    ch = bot.get_channel(int(ch_id))
+    if ch:
+        await ch.send(f"🎤 {transcript}")
 
 
 @bot.command(name="record")
