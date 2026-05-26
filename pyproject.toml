@@ -18,3 +18,8 @@ dependencies = [
     "onnx>=1.21.0",
     "sounddevice>=0.5.5",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

@@ -2,6 +2,7 @@ import asyncio
 import enum
 import logging
 import os
+import time
 import wave
 from pathlib import Path
 
@@ -12,11 +13,14 @@ import numpy as np
 import yaml
 from discord.ext import commands, tasks
 from discord.ext import voice_recv
+from discord.ext.voice_recv.buffer import HeapJitterBuffer
 from discord.ext.voice_recv.opus import PacketDecoder
 from discord.ext.voice_recv.router import PacketRouter
+from discord.ext.voice_recv.utils import add_wrapped as _add_wrapped
 from dotenv import load_dotenv
 
 from core.audio_sink import CarAudioSink
+from core.orchestrator import Orchestrator
 from core.stt import STTEngine
 from core.vad import SileroVAD
 from core.wake_word import WakeWordDetector
@@ -25,6 +29,8 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
+# PacketDecoder flush 경고는 발화 끝 지점의 정상 동작 — 실제 오디오 손상 아님
+logging.getLogger("discord.ext.voice_recv.opus").setLevel(logging.ERROR)
 log = logging.getLogger(__name__)
 
 # 핵심 이벤트만 별도 파일에 기록 (wake word, transcript, 오류)
@@ -47,6 +53,11 @@ stt = STTEngine(
     compute_type=_cfg["stt"]["compute_type"],
     language=_cfg["stt"]["language"],
     initial_prompt=_cfg["stt"]["initial_prompt"],
+)
+
+orchestrator = Orchestrator(
+    cfg=_cfg,
+    anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
 )
 
 
@@ -99,6 +110,33 @@ def _dave_decode_packet(self, packet):
     return _orig_decode_packet(self, packet)
 
 PacketDecoder._decode_packet = _dave_decode_packet
+
+# Patch 3: 비순차 패킷 처리 지연 개선
+# 기본 HeapJitterBuffer는 maxsize=10 → 비순차 패킷이 10개 쌓여야 강제 팝 (~200ms 블로킹).
+# 2개만 쌓이면 바로 팝하도록 _update_has_item을 오버라이드한다.
+# prefsize=0, prefill=0으로 순차 패킷은 즉시 팝 (jitter delay 제거).
+class _LowLatencyJitterBuffer(HeapJitterBuffer):
+    _FORCE_POP = 2  # 비순차 패킷 이만큼 쌓이면 강제 팝
+
+    def _update_has_item(self):
+        if self._prefill > 0 or len(self._buffer) <= self.prefsize:
+            self._has_item.clear()
+            return
+        next_pkt = self._buffer[0]
+        sequential = _add_wrapped(self._last_tx_seq, 1) == next_pkt.sequence
+        positive_seq = self._last_tx_seq >= 0
+        if (sequential and positive_seq) or not positive_seq or len(self._buffer) >= self._FORCE_POP:
+            self._has_item.set()
+        else:
+            self._has_item.clear()
+
+_orig_decoder_init = PacketDecoder.__init__
+
+def _low_latency_decoder_init(self, router, ssrc):
+    _orig_decoder_init(self, router, ssrc)
+    self._buffer = _LowLatencyJitterBuffer(maxsize=10, prefsize=0, prefill=0)
+
+PacketDecoder.__init__ = _low_latency_decoder_init
 
 intents = discord.Intents.default()
 intents.voice_states = True
@@ -156,12 +194,11 @@ async def _capture_and_transcribe():
 
     vad = SileroVAD(threshold=_cfg["vad"]["threshold"])
     tail_frames = int(_cfg["vad"]["tail_ms"] / 32)      # 32ms per VAD chunk
-    max_frames  = int(_cfg["vad"]["max_duration_s"] * 1000 / 32)
+    deadline    = time.monotonic() + _cfg["vad"]["max_duration_s"]
 
     capture_buf: list[np.ndarray] = []
     vad_buf = np.array([], dtype=np.int16)
     silent_frames = 0
-    total_frames  = 0
     speech_started = False
     consec_speech = 0          # 연속 speech 프레임 수
     MIN_SPEECH = 5             # 5 × 32ms = 160ms 이상 연속 speech여야 진짜 발화
@@ -170,8 +207,12 @@ async def _capture_and_transcribe():
     done = False
 
     while not done:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log.warning("Capture wall-clock limit reached (%.0fs)", _cfg["vad"]["max_duration_s"])
+            break
         try:
-            chunk = await asyncio.wait_for(capture_queue.get(), timeout=15.0)
+            chunk = await asyncio.wait_for(capture_queue.get(), timeout=min(15.0, remaining))
         except asyncio.TimeoutError:
             log.warning("Capture timeout — no audio received")
             break
@@ -181,7 +222,6 @@ async def _capture_and_transcribe():
 
         while len(vad_buf) >= 512:
             frame, vad_buf = vad_buf[:512], vad_buf[512:]
-            total_frames += 1
             if vad.is_speech(frame):
                 consec_speech += 1
                 silent_frames = 0
@@ -202,9 +242,6 @@ async def _capture_and_transcribe():
             if speech_started and silent_frames >= tail_frames:
                 done = True
                 break
-            if total_frames >= max_frames:
-                done = True
-                break
 
     try:
         if capture_buf:
@@ -219,6 +256,7 @@ async def _capture_and_transcribe():
             if transcript:
                 log.info("Transcript: %s", transcript)
                 await _post_transcript(transcript)
+                asyncio.create_task(_run_llm(transcript))
             else:
                 log.info("STT returned empty transcript")
     finally:
@@ -236,6 +274,20 @@ async def _post_transcript(transcript: str):
     ch = bot.get_channel(int(ch_id))
     if ch:
         await ch.send(f"🎤 {transcript}")
+
+
+async def _run_llm(transcript: str):
+    ch_id = os.environ.get("DISCORD_TEXT_CHANNEL_ID")
+    ch = bot.get_channel(int(ch_id)) if ch_id else None
+    try:
+        response = await orchestrator.handle(transcript)
+        log.info("LLM response: %s", response[:80])
+        if ch and response:
+            await ch.send(f"🤖 {response}")
+    except Exception:
+        log.exception("LLM error for transcript: %s", transcript)
+        if ch:
+            await ch.send("⚠️ LLM 응답 오류가 발생했습니다.")
 
 
 @bot.command(name="record")
