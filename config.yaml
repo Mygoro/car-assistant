@@ -21,11 +21,9 @@ llm:
   history_turns: 10
 
 intent_routing:
-  "note.create": "anthropic/claude-sonnet-4-6"
-  "calendar.read": "anthropic/claude-haiku-4-5-20251001"
-  "calendar.write": "anthropic/claude-sonnet-4-6"
-  "research": "anthropic/claude-sonnet-4-6"
-  "simple_qa": "anthropic/claude-haiku-4-5-20251001"
+  "default": "anthropic/claude-sonnet-4-6"
+  "trivial": "anthropic/claude-haiku-4-5"
+  "complex_reasoning": "anthropic/claude-opus-4-7"
   "offline_fallback": "ollama/qwen2.5:14b"
 
 tts:

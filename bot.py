@@ -280,10 +280,19 @@ async def _run_llm(transcript: str):
     ch_id = os.environ.get("DISCORD_TEXT_CHANNEL_ID")
     ch = bot.get_channel(int(ch_id)) if ch_id else None
     try:
-        response = await orchestrator.handle(transcript)
-        log.info("LLM response: %s", response[:80])
-        if ch and response:
-            await ch.send(f"🤖 {response}")
+        voice, text = await orchestrator.handle(transcript)
+
+        if not voice and not text:
+            log.info("Empty dual response — skipping TTS and Discord post")
+            return
+
+        log.info("voice_response (%d chars): %s", len(voice), voice[:80])
+
+        # Phase 5: voice_response를 TTS 파이프라인에 전달
+        # await tts_pipeline(voice)
+
+        if ch and text:
+            await ch.send(f"🤖 {text}")
     except Exception:
         log.exception("LLM error for transcript: %s", transcript)
         if ch:
