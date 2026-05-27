@@ -3,7 +3,9 @@ import asyncio
 import io
 import logging
 import math
+import queue
 import struct
+import time
 from pathlib import Path
 
 import discord
@@ -40,20 +42,62 @@ class ElevenLabsTTS:
                     yield chunk
 
 
+class _StreamingPCMAudio(discord.AudioSource):
+    """ElevenLabs MP3 → ffmpeg PCM → Discord를 버퍼링 없이 실시간 연결하는 AudioSource.
+
+    async 쪽(PCM 생산자)에서 push()/finish()로 데이터를 밀어 넣고,
+    Discord 오디오 스레드(소비자)에서 read()로 20ms 단위로 꺼낸다.
+    queue.Queue가 두 스레드를 브릿지한다.
+    """
+    FRAME = 3840  # 20ms @ 48kHz stereo s16le
+
+    def __init__(self) -> None:
+        self._q: queue.Queue[bytes | None] = queue.Queue(maxsize=200)
+        self._buf = b""
+
+    # ── 생산자 (async 컨텍스트) ──────────────────────────────────────
+
+    def push(self, data: bytes) -> None:
+        self._buf += data
+        while len(self._buf) >= self.FRAME:
+            self._q.put(self._buf[: self.FRAME])
+            self._buf = self._buf[self.FRAME :]
+
+    def finish(self) -> None:
+        if self._buf:
+            self._q.put(self._buf + bytes(self.FRAME - len(self._buf)))
+        self._q.put(None)  # sentinel
+
+    # ── 소비자 (Discord 오디오 스레드) ──────────────────────────────
+
+    def read(self) -> bytes:
+        try:
+            chunk = self._q.get(timeout=0.5)
+        except queue.Empty:
+            return bytes(self.FRAME)  # 버퍼 언더런 → 무음
+        return chunk if chunk is not None else b""
+
+    def is_opus(self) -> bool:
+        return False
+
+    def cleanup(self) -> None:
+        pass
+
+
 async def speak(
     voice_client: discord.VoiceClient,
     tts: ElevenLabsTTS,
     text: str,
     wake_detector=None,
 ) -> None:
-    """voice_response 텍스트를 TTS 변환 후 Discord 음성 채널로 송출.
+    """voice_response를 ElevenLabs에서 스트리밍해 Discord로 즉시 재생.
 
-    wake_detector가 전달되면 재생 중 wake word 감지를 일시 정지한다.
+    MP3를 전부 받은 뒤 재생하던 기존 방식 대신,
+    첫 PCM 청크가 나오는 순간 재생을 시작해 체감 지연을 줄인다.
     """
     if not text.strip():
         return
 
-    # MP3 → ffmpeg → PCM 48kHz stereo
     try:
         ffmpeg_proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-i", "pipe:0",
@@ -67,7 +111,9 @@ async def speak(
         log.error("ffmpeg not found — TTS 송출 불가")
         return
 
-    async def _feed():
+    source = _StreamingPCMAudio()
+
+    async def _feed_mp3() -> None:
         try:
             async for chunk in tts.stream_mp3(text):
                 ffmpeg_proc.stdin.write(chunk)
@@ -76,28 +122,31 @@ async def speak(
         finally:
             ffmpeg_proc.stdin.close()
 
-    feed_task = asyncio.create_task(_feed())
+    async def _read_pcm() -> None:
+        while True:
+            pcm = await ffmpeg_proc.stdout.read(_StreamingPCMAudio.FRAME)
+            if not pcm:
+                break
+            source.push(pcm)
+        source.finish()
+        await ffmpeg_proc.wait()
 
-    pcm_parts: list[bytes] = []
-    while True:
-        chunk = await ffmpeg_proc.stdout.read(3840)  # 40ms @ 48kHz stereo s16le
-        if not chunk:
-            break
-        pcm_parts.append(chunk)
+    feed_task = asyncio.create_task(_feed_mp3())
+    pcm_task = asyncio.create_task(_read_pcm())
 
-    await feed_task
-    await ffmpeg_proc.wait()
-
-    pcm_data = b"".join(pcm_parts)
-    if not pcm_data:
-        log.warning("ffmpeg PCM 출력 없음 — TTS 송출 skip")
-        return
+    # 첫 PCM 청크가 큐에 쌓일 때까지 대기 → 재생 시작
+    t_speak_start = time.monotonic()
+    while source._q.empty():
+        await asyncio.sleep(0.01)
+    log.info("[TIMING] 🔊 TTS 첫음절: %.2fs", time.monotonic() - t_speak_start)
 
     if wake_detector is not None:
         wake_detector.pause()
     try:
-        source = discord.PCMAudio(io.BytesIO(pcm_data))
         voice_client.play(source)
+        # PCM 생산 완료 + Discord 재생 완료까지 대기
+        await pcm_task
+        await feed_task
         while voice_client.is_playing():
             await asyncio.sleep(0.05)
     finally:
