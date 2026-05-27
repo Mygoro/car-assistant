@@ -37,11 +37,12 @@ logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
 logging.getLogger("discord.ext.voice_recv.opus").setLevel(logging.ERROR)
 log = logging.getLogger(__name__)
 
-# 핵심 이벤트만 별도 파일에 기록 (wake word, transcript, 오류)
+# 핵심 이벤트만 별도 파일에 기록 (wake word, transcript, 오류, cue)
 _event_handler = logging.FileHandler("otto_events.log", encoding="utf-8")
 _event_handler.setLevel(logging.INFO)
 _event_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 log.addHandler(_event_handler)
+logging.getLogger("core.tts").addHandler(_event_handler)  # CUE 로그 파일 기록
 
 with open("config.yaml", encoding="utf-8") as _f:
     _cfg = yaml.safe_load(_f)

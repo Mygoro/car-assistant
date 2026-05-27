@@ -111,11 +111,24 @@ async def play_cue(voice_client: discord.VoiceClient, path: str | Path) -> None:
     if not p.exists():
         log.warning("Cue file not found: %s", p)
         return
+    # 이전 재생이 끝날 때까지 대기 (Already playing audio 예외 방지)
+    wait_deadline = asyncio.get_event_loop().time() + 3.0
+    while voice_client.is_playing() and asyncio.get_event_loop().time() < wait_deadline:
+        await asyncio.sleep(0.02)
+    if voice_client.is_playing():
+        log.warning("play_cue: previous audio still playing after 3s — skipping %s", p.name)
+        return
+    log.info("CUE ▶ %s", p.name)
     source = discord.FFmpegPCMAudio(str(p))
-    voice_client.play(source)
+    try:
+        voice_client.play(source)
+    except Exception:
+        log.exception("play_cue: voice_client.play() failed for %s", p.name)
+        return
     deadline = asyncio.get_event_loop().time() + 5.0
     while voice_client.is_playing() and asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(0.02)
+    log.info("CUE ■ %s", p.name)
 
 
 async def play_tone(voice_client: discord.VoiceClient, freq: int, duration: float = 0.12) -> None:
