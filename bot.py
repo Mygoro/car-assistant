@@ -24,8 +24,8 @@ from core.orchestrator import Orchestrator
 from core.stt import STTEngine
 from core.tts import ElevenLabsTTS, speak, play_cue
 
-CUE_ENTER = "Otto enter.mp3"   # 웨이크 + 다음 턴 리슨 시작 직전
-CUE_QUIT  = "Otto quit.mp3"    # 세션 종료 즉시 (이유 무관)
+CUE_ENTER = "cues/otto_enter.mp3"   # 웨이크 + 다음 턴 리슨 시작 직전
+CUE_QUIT  = "cues/otto_quit.mp3"    # 세션 종료 즉시 (이유 무관)
 from core.vad import SileroVAD
 from core.wake_word import WakeWordDetector
 
@@ -190,7 +190,7 @@ async def audio_processor():
                     _session_active = True
                     wake_detector.pause()
                     asyncio.create_task(_notify_wake_word())
-                    asyncio.create_task(_capture_and_transcribe(first_turn=True))
+                    # _capture_and_transcribe는 _notify_wake_word가 cue 완료 후 시작함
             elif _state in (BotState.LISTENING, BotState.PROCESSING):
                 capture_queue.put_nowait(chunk)  # 캡처 함수로 전달
         except Exception:
@@ -198,8 +198,10 @@ async def audio_processor():
 
 
 async def _notify_wake_word():
+    # 효과음 완료 후 1.5s 타임아웃 카운트다운 시작 — cue 먼저, 캡처는 cue 끝난 뒤
     if voice_client and voice_client.is_connected():
         await play_cue(voice_client, CUE_ENTER)
+    asyncio.create_task(_capture_and_transcribe(first_turn=True))
     ch_id = os.environ.get("DISCORD_TEXT_CHANNEL_ID")
     if not ch_id:
         return
@@ -295,20 +297,20 @@ async def _capture_and_transcribe(first_turn: bool = True):
             capture_queue.get_nowait()
         await asyncio.sleep(0)  # 이벤트 루프 양보 — Discord heartbeat 기아 방지
         if _session_active and had_transcript:
-            # 세션 유지 — enter 효과음 후 다음 발화 대기 (두 번째 턴부터 3s 타임아웃)
+            # 세션 유지 — cue 재생 완료 후 3s 타임아웃 카운트다운 시작
             _state = BotState.LISTENING
             if voice_client and voice_client.is_connected():
-                asyncio.create_task(play_cue(voice_client, CUE_ENTER))
+                await play_cue(voice_client, CUE_ENTER)
             asyncio.create_task(_capture_and_transcribe(first_turn=False))
             log.info("Session continuing — listening for next utterance")
         else:
             # 무응답 / 빈 transcript / 종료 키워드 → IDLE
             _session_active = False
             _state = BotState.IDLE
+            if voice_client and voice_client.is_connected():
+                await play_cue(voice_client, CUE_QUIT)
             wake_detector.resume()
             log.info("Session closed — returned to IDLE")
-            if voice_client and voice_client.is_connected():
-                asyncio.create_task(play_cue(voice_client, CUE_QUIT))
 
 
 async def _post_transcript(transcript: str):
