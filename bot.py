@@ -22,7 +22,10 @@ from dotenv import load_dotenv
 from core.audio_sink import CarAudioSink
 from core.orchestrator import Orchestrator
 from core.stt import STTEngine
-from core.tts import ElevenLabsTTS, speak
+from core.tts import ElevenLabsTTS, speak, play_cue
+
+CUE_ENTER = "Otto enter.mp3"   # 웨이크 + 다음 턴 리슨 시작 직전
+CUE_QUIT  = "Otto quit.mp3"    # 세션 종료 즉시 (이유 무관)
 from core.vad import SileroVAD
 from core.wake_word import WakeWordDetector
 
@@ -171,7 +174,7 @@ async def on_ready():
 
 
 async def audio_processor():
-    global _state
+    global _state, _session_active
     log.info("audio_processor started")
     while True:
         try:
@@ -187,7 +190,7 @@ async def audio_processor():
                     _session_active = True
                     wake_detector.pause()
                     asyncio.create_task(_notify_wake_word())
-                    asyncio.create_task(_capture_and_transcribe())
+                    asyncio.create_task(_capture_and_transcribe(first_turn=True))
             elif _state in (BotState.LISTENING, BotState.PROCESSING):
                 capture_queue.put_nowait(chunk)  # 캡처 함수로 전달
         except Exception:
@@ -195,6 +198,8 @@ async def audio_processor():
 
 
 async def _notify_wake_word():
+    if voice_client and voice_client.is_connected():
+        await play_cue(voice_client, CUE_ENTER)
     ch_id = os.environ.get("DISCORD_TEXT_CHANNEL_ID")
     if not ch_id:
         return
@@ -203,7 +208,7 @@ async def _notify_wake_word():
         await ch.send("[WAKE WORD] 크랭크 오토 감지됨")
 
 
-async def _capture_and_transcribe():
+async def _capture_and_transcribe(first_turn: bool = True):
     """LISTENING: VAD로 발화 캡처 → STT → LLM+TTS → 세션 유지 or 종료."""
     global _state, _session_active
 
@@ -227,9 +232,11 @@ async def _capture_and_transcribe():
             log.warning("Capture wall-clock limit reached (%.0fs)", _cfg["vad"]["max_duration_s"])
             break
         try:
-            chunk = await asyncio.wait_for(capture_queue.get(), timeout=min(15.0, remaining))
+            # 첫 턴: tail_ms(1.5s) / 이후 턴: TTS 끝난 뒤 여유 있게 3s
+            silence_timeout = _cfg["vad"]["tail_ms"] / 1000 if first_turn else 3.0
+            chunk = await asyncio.wait_for(capture_queue.get(), timeout=min(silence_timeout, remaining))
         except asyncio.TimeoutError:
-            log.warning("Capture timeout — no audio received")
+            log.debug("Audio queue silent for %.1fs — ending capture", _cfg["vad"]["tail_ms"] / 1000)
             break
 
         capture_buf.append(chunk)
@@ -262,13 +269,15 @@ async def _capture_and_transcribe():
     try:
         if capture_buf:
             audio = np.concatenate(capture_buf)
-            log.info("Captured %.1fs — running STT...", len(audio) / 16000)
+            t_stt_start = time.monotonic()
+            log.info("[TIMING] 🎙 캡처 %.1fs — STT 시작", len(audio) / 16000)
             _state = BotState.PROCESSING
             try:
                 transcript = await stt.transcribe(audio)
             except Exception:
                 log.exception("STT error")
                 transcript = ""
+            log.info("[TIMING] 📝 STT: %.2fs", time.monotonic() - t_stt_start)
             if transcript:
                 had_transcript = True
                 log.info("Transcript: %s", transcript)
@@ -278,23 +287,28 @@ async def _capture_and_transcribe():
                     _session_active = False
                     log.info("Session close keyword detected")
                 # 세션 모드: TTS 완료까지 대기 (에코 방지)
-                await _run_llm(transcript)
+                await _run_llm(transcript, t_stt_start=t_stt_start)
             else:
                 log.info("STT returned empty transcript")
     finally:
         while not capture_queue.empty():
             capture_queue.get_nowait()
+        await asyncio.sleep(0)  # 이벤트 루프 양보 — Discord heartbeat 기아 방지
         if _session_active and had_transcript:
-            # 세션 유지 — 다음 발화 즉시 대기
+            # 세션 유지 — enter 효과음 후 다음 발화 대기 (두 번째 턴부터 3s 타임아웃)
             _state = BotState.LISTENING
-            asyncio.create_task(_capture_and_transcribe())
+            if voice_client and voice_client.is_connected():
+                asyncio.create_task(play_cue(voice_client, CUE_ENTER))
+            asyncio.create_task(_capture_and_transcribe(first_turn=False))
             log.info("Session continuing — listening for next utterance")
         else:
-            # 무응답(8초 timeout) / 빈 transcript / 종료 키워드 → IDLE
+            # 무응답 / 빈 transcript / 종료 키워드 → IDLE
             _session_active = False
             _state = BotState.IDLE
             wake_detector.resume()
             log.info("Session closed — returned to IDLE")
+            if voice_client and voice_client.is_connected():
+                asyncio.create_task(play_cue(voice_client, CUE_QUIT))
 
 
 async def _post_transcript(transcript: str):
@@ -306,27 +320,41 @@ async def _post_transcript(transcript: str):
         await ch.send(f"🎤 {transcript}")
 
 
-async def _run_llm(transcript: str):
+async def _run_llm(transcript: str, t_stt_start: float | None = None):
     ch_id = os.environ.get("DISCORD_TEXT_CHANNEL_ID")
     ch = bot.get_channel(int(ch_id)) if ch_id else None
+    tts_task: asyncio.Task | None = None
     try:
-        voice, text = await orchestrator.handle(transcript)
+        t_llm_start = time.monotonic()
 
-        if not voice and not text:
-            log.info("Empty dual response — skipping TTS and Discord post")
-            return
+        async for stage, content in orchestrator.run_voice_first(transcript):
+            if stage == "voice":
+                log.info("[TIMING] 🤖 LLM→voice_response: %.2fs", time.monotonic() - t_llm_start)
+                if content and voice_client and voice_client.is_connected():
+                    # voice_response 완성 즉시 TTS 시작 — text_response 생성과 병렬 실행
+                    tts_task = asyncio.create_task(
+                        speak(voice_client, tts, content, wake_detector=wake_detector)
+                    )
+                elif content:
+                    log.warning("voice_client not connected — TTS skip")
 
-        log.info("voice_response (%d chars): %s", len(voice), voice[:80])
+            elif stage == "text":
+                log.info("[TIMING] 🤖 LLM→text_response: %.2fs", time.monotonic() - t_llm_start)
+                if ch and content:
+                    await ch.send(f"🤖 {content}")
 
-        if voice and voice_client and voice_client.is_connected():
-            await speak(voice_client, tts, voice, wake_detector=wake_detector)
-        elif voice:
-            log.warning("voice_client not connected — TTS skip")
+        # TTS 완료 대기 (에코 방지: TTS 끝나야 다음 캡처 재개)
+        if tts_task:
+            await tts_task
+            log.info("[TIMING] 🔊 TTS+재생 완료: %.2fs", time.monotonic() - t_llm_start)
 
-        if ch and text:
-            await ch.send(f"🤖 {text}")
+        if t_stt_start is not None:
+            log.info("[TIMING] ⏱ 총 (STT시작→음성종료): %.2fs", time.monotonic() - t_stt_start)
+
     except Exception:
         log.exception("LLM error for transcript: %s", transcript)
+        if tts_task and not tts_task.done():
+            tts_task.cancel()
         if ch:
             await ch.send("⚠️ LLM 응답 오류가 발생했습니다.")
 

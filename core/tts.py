@@ -2,6 +2,8 @@
 import asyncio
 import io
 import logging
+import math
+import struct
 from pathlib import Path
 
 import discord
@@ -101,6 +103,37 @@ async def speak(
     finally:
         if wake_detector is not None:
             wake_detector.resume()
+
+
+async def play_cue(voice_client: discord.VoiceClient, path: str | Path) -> None:
+    """효과음 MP3 파일을 Discord 음성 채널로 송출. 파일 없으면 조용히 skip."""
+    p = Path(path)
+    if not p.exists():
+        log.warning("Cue file not found: %s", p)
+        return
+    source = discord.FFmpegPCMAudio(str(p))
+    voice_client.play(source)
+    deadline = asyncio.get_event_loop().time() + 5.0
+    while voice_client.is_playing() and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+
+
+async def play_tone(voice_client: discord.VoiceClient, freq: int, duration: float = 0.12) -> None:
+    """짧은 비프음을 Discord 음성 채널로 송출 (클릭 방지 fade in/out 포함)."""
+    sample_rate = 48000
+    n = int(sample_rate * duration)
+    fade_samples = int(sample_rate * 0.01)  # 10ms fade
+    pcm = bytearray()
+    for i in range(n):
+        t = i / sample_rate
+        fade = min(i / fade_samples, 1.0, (n - i) / fade_samples)
+        val = int(math.sin(2 * math.pi * freq * t) * fade * 0.35 * 32767)
+        sample = struct.pack("<h", max(-32767, min(32767, val)))
+        pcm += sample + sample  # stereo
+    source = discord.PCMAudio(io.BytesIO(bytes(pcm)))
+    voice_client.play(source)
+    while voice_client.is_playing():
+        await asyncio.sleep(0.02)
 
 
 async def speak_local(tts: ElevenLabsTTS, text: str) -> None:

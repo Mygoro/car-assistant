@@ -26,14 +26,14 @@ class STTEngine:
         """PCM int16 mono 16kHz → Korean transcript string."""
         audio = pcm_int16.astype(np.float32) / 32768.0
         loop = asyncio.get_event_loop()
-        segments, _ = await loop.run_in_executor(
-            None,
-            lambda: self._model.transcribe(
+        def _run():
+            segs, _ = self._model.transcribe(
                 audio,
                 language=self._language,
                 initial_prompt=self._initial_prompt,
                 beam_size=5,
                 vad_filter=True,
-            ),
-        )
-        return "".join(seg.text for seg in segments).strip()
+            )
+            return "".join(seg.text for seg in segs).strip()  # generator를 executor 안에서 소비
+
+        return await loop.run_in_executor(None, _run)

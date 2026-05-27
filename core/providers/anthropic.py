@@ -23,7 +23,8 @@ class AnthropicProvider:
             tools=tools if tools else [],
         )
         if system:
-            kwargs["system"] = system
+            # 시스템 프롬프트 캐싱: 매 턴 3700자를 새로 보내지 않고 5분간 캐시
+            kwargs["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
         async with self._client.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:

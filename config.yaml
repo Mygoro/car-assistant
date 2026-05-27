@@ -11,7 +11,7 @@ stt:
 
 vad:
   threshold: 0.3
-  tail_ms: 3000
+  tail_ms: 1500
   max_duration_s: 30
 
 llm:

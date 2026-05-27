@@ -16,6 +16,9 @@ log = logging.getLogger(__name__)
 
 _RESET_KEYWORDS = {"새로 시작해", "새로시작해", "리셋", "초기화", "대화 초기화"}
 
+# voice_response 값이 완성된 시점을 스트림 중에 감지
+_VOICE_RE = re.compile(r'"voice_response"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -162,6 +165,54 @@ class Orchestrator:
         if voice:
             yield Delta(text=voice)
         yield Delta(text="", is_final=True)
+
+    async def run_voice_first(self, transcript: str):
+        """Voice-first 파이프라인.
+
+        Yields:
+            ('voice', str) — voice_response 완성 즉시 (TTS 시작 신호)
+            ('text',  str) — 전체 응답 완성 후 (Discord 게시 신호)
+        """
+        if any(kw in transcript for kw in _RESET_KEYWORDS):
+            self._history.clear()
+            log.info("Conversation history reset")
+            yield "voice", "대화 기록을 초기화했어요."
+            yield "text", "(히스토리 초기화)"
+            return
+
+        intent = classify_intent(transcript)
+        provider = self._get_provider(intent)
+        log.info("Intent: %s | model: %s", intent, provider.model)
+        messages = self._build_messages(transcript)
+
+        buffer = ""
+        voice_emitted = False
+
+        async for delta in provider.stream(messages, tools=[]):
+            if delta.text:
+                buffer += delta.text
+                if not voice_emitted:
+                    m = _VOICE_RE.search(buffer)
+                    if m:
+                        try:
+                            voice = json.loads(f'"{m.group(1)}"')
+                        except json.JSONDecodeError:
+                            voice = m.group(1)
+                        voice = validate_voice_length(voice)
+                        voice_emitted = True
+                        yield "voice", voice
+
+        # 전체 응답 완성 — text_response 파싱
+        voice_full, text = parse_dual_response(buffer)
+
+        if not voice_emitted:
+            yield "voice", validate_voice_length(voice_full)
+
+        if voice_full or text:
+            self._push_history(Message("user", transcript))
+            self._push_history(Message("assistant", buffer))
+
+        yield "text", text
 
     # ------------------------------------------------------------------
     # Internal helpers
