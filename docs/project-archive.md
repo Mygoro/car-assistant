@@ -10,51 +10,157 @@ Byunghun Kwon · 2022195171
 - **Phase 1 완료** — 오디오 수신 및 저장 (DAVE E2E 패치, WAV 디버그 검증)
 - **Phase 2 완료** — Wake word 게이트 (크랭크 오토, openwakeword, threshold=0.85, CONFIRM_FRAMES=1)
 - **Phase 3 완료** — STT 통합 (Silero VAD 8kHz, faster-whisper large-v3, capture_queue 분리, MIN_SPEECH 가드)
-- **다음 작업**: **데스크탑 이식 → Phase 4 (LLM)**
-- **개발 환경**: CPU-only 노트북 → 데스크탑 이식 대기 중
+- **Phase 4 완료** — LLM 텍스트 응답 파이프라인 (providers 추상화, Orchestrator, dual-response JSON)
+- **Phase 5 완료** — ElevenLabs TTS + Discord 음성 송출, 세션 모드, 효과음, voice-first 스트리밍
+- **다음 작업**: Phase 6 — MCP 툴 통합 (Calendar/Notion 읽기) + Phase 6.5 차량 데이터 mock
+- **개발 환경**: CPU-only 노트북 (GPU 이식 미완료 — 데스크탑 이식 필요)
+- **전시 일정**: 2026-06-02 (D-5)
 
 ---
 
-### ⚡ 다음 세션 시작 지점 (2026-05-23 이후)
+### ⚡ 다음 세션 시작 지점 (2026-05-28 이후)
 
-**Step 1 — 데스크탑 이식** (노트북 → NVIDIA GPU 데스크탑)
+**확인할 것 1 — 미커밋 파일**
 ```
-git clone https://github.com/Mygoro/car-assistant.git
-cd car-assistant
-uv sync
-cp .env.example .env   # 또는 노트북 .env 내용 복사
+tools/chat_test.py     # --tts 플래그 uncommitted (Phase 5 세션에서 누락)
+Otto enter.mp3         # cue 효과음 (git add 후 커밋 필요)
+Otto quit.mp3
+exhibition/            # 전시 설계 문서 (git add 후 커밋 필요)
+docs/hyundai-api-survey.md
+docs/map-api-survey.md
 ```
-`config.yaml` 두 줄 수정:
-```yaml
-stt:
-  device: "cuda"           # "cpu" → "cuda"
-  compute_type: "int8_float16"  # "int8" → "int8_float16"
-```
-`uv run bot.py` 실행 후 Discord에서 "크랭크 오토" 테스트 → STT 응답 1-2초 이내 확인
+전부 `git add` 후 커밋.
 
-**Step 2 — Phase 4 시작**
-`docs/implementation-manual.md` Phase 4 섹션 읽고 구현 시작
+**확인할 것 2 — CPU→GPU 이식 (로드맵 5/24 예정이었으나 미완)**
+이식 없이 Phase 4/5까지 노트북 CPU로 진행함. STT가 12~40초로 느림 (otto_events.log 실측).
+Phase 6(MCP) 구현은 CPU에서도 가능하나, 실사용·전시 품질을 위해 이식이 시급.
 
-### 확정된 아키텍처
+**다음 작업: Phase 6**
+`docs/implementation-manual.md` Phase 6 섹션 참고.
+우선순위: Calendar read → Notion read → Phase 6.5 mock vehicle provider.
+
+### 확정된 아키텍처 (Phase 5 완료 기준)
 ```
 Discord mobile (클라이언트, zero-code)
-    ↓ 음성 메시지
+    ↓ 음성 메시지 (Krisp 노이즈 억제)
 Python bot (홈 서버)
-    → Porcupine wake word detection
-    → faster-whisper STT (VAD silence tail: 4000ms)
-    → Claude Sonnet API (MCP tool integration, 응답 길이 무제한)
-    → ElevenLabs Flash TTS
-    ↓ 오디오
+    → openwakeword "크랭크 오토" (threshold=0.85)
+    → [CUE_ENTER MP3 재생]
+    → Silero VAD (8kHz) + faster-whisper large-v3
+    → Orchestrator (3-tier 인텐트 분류, 10턴 히스토리)
+    → Claude Sonnet 4.6 (dual-response JSON, 시스템 프롬프트 캐싱)
+    → ElevenLabs Flash v2.5 TTS (voice-first 스트리밍)
+    ↓ 오디오 (ffmpeg → Opus)
 Discord mobile (재생)
+    + Discord 채팅 채널 (text_response 게시)
 ```
+
+세션 모드: wake word 1회 → 연속 대화 → "슬립 오토" 또는 무응답 3초로 종료.
 
 ### 주요 결정 사항
 - **클라이언트**: Discord mobile — 네이티브 앱 개발 생략, 데이터/배터리 비용 감수
-- **VAD silence tail**: 400ms → 4000ms (자연스러운 발화 포즈 수용)
-- **LLM 응답 길이**: 제한 없음 (정확성 우선)
-- **장기 메모리**: `memory.md` 파일 → 매 세션 시스템 프롬프트 주입, 주 1회 수동 업데이트
+- **VAD silence tail**: `tail_ms: 1500` (1.5s — 3000에서 단축. 첫 턴 1.5s, 이후 턴 3.0s 동적)
+- **LLM 응답**: dual-response JSON (voice_response=짧음/TTS용, text_response=상세/채팅용)
+- **장기 메모리**: `core/memory.md` 파일 → 매 세션 시스템 프롬프트 주입, 주 1회 수동 업데이트
+- **인텐트 라우팅**: 3-tier (trivial→Haiku, default→Sonnet, complex_reasoning→Opus)
+- **wake word**: "크랭크 오토" (openwakeword 커스텀, "hey otto" 오탐 문제로 피벗)
 
 ### 날짜별 작업 내역
+
+#### 2026-05-28 — Phase 5 세련화 / 비정상 종료로 대화 유실 (git으로 복원)
+
+> 이 항목은 비정상 종료로 날아간 3시간 세션을 git 히스토리 + otto_events.log로 역추적해 재구성한 것이다.
+
+**ba2c264 커밋 (2026-05-28 00:02) — Phase 5 세련화**
+
+otto_events.log를 보면 2026-05-27 23:36~23:39 테스트에서 발견된 문제들이 이 커밋에서 한꺼번에 해결됐다.
+
+| 발견된 문제 | 원인 | 수정 |
+|------------|------|------|
+| Discord heartbeat가 끊기는 현상 | STT transcribe()가 faster-whisper generator를 메인 이벤트 루프에서 소비 → 루프 독점 | `core/stt.py`: generator 소비를 executor 안으로 이동. `bot.py`: `asyncio.sleep(0)` 양보 포인트 삽입 |
+| 첫 번째 발화 후 다음 발화 캡처가 너무 일찍 끊김 | 세션 유지 시 tail_ms(1.5s) 동일 적용 → 말하기 전에 이미 타임아웃 | `first_turn` 파라미터 도입: 첫 턴 1.5s, 이후 턴 3.0s 침묵 타임아웃 |
+| voice_response 완성 후 text_response 대기 시간 낭비 | `handle()`이 voice+text 모두 완성 후 TTS 시작 | `core/orchestrator.py`: `run_voice_first()` 추가 — voice_response 완성 즉시 TTS Task 시작, text_response는 병렬 생성 |
+| 매 턴마다 시스템 프롬프트 전체를 전송 (비용 낭비) | 캐싱 미적용 | `core/providers/anthropic.py`: `cache_control: ephemeral` 적용 |
+| wake word 감지/세션 종료 타이밍이 불명확 | 시각/청각 피드백 없음 | `core/tts.py`: `play_cue()` 추가. `Otto enter.mp3` (wake+다음 턴 직전), `Otto quit.mp3` (세션 종료 즉시) |
+| tail_ms 너무 길어 응답 후 다음 입력까지 오래 기다림 | config: `tail_ms: 3000` | `config.yaml`: `tail_ms: 3000 → 1500` |
+
+**ba2c264 이후 테스트 로그 분석 (00:02~00:09)**
+
+```
+00:05:39  STT: 36.54s — "그리고 지난번에만"   ← CPU 모드에서 긴 캡처(1.6s) 전사 36초
+00:06:39  STT: 12.57s — "한글자막 by 한효정"  ← 배경 TV 소리가 전사됨 (오탐)
+00:07:29  STT: 40.91s — "자막 제공 및 영상..."  ← 동일한 배경 오탐, STT 41초
+00:08:23  캡처: 12.2s, STT: 17.74s            ← 긴 발화(브이로그 언급) 테스트
+00:09:14  STT: 16.99s — "조용히 하라고 아"   ← 마지막 로그
+```
+
+**해석:**
+- CPU 모드에서 STT가 12~41초로 너무 느려 실사용 불가 상태. 데스크탑 GPU 이식이 시급한 이유.
+- 배경 음성(TV 등)이 wake word 이후 캡처 버퍼에 섞여 LLM까지 전달됨. MIN_SPEECH 가드는 있으나 짧은 배경음도 STT가 유효한 텍스트로 전사함.
+- 00:09:19 세션 종료 후 비정상 종료 발생. 이후 추가 커밋 없음.
+
+**유실된 작업 범위:**
+- 코드: `tools/chat_test.py` --tts 플래그 (unstaged 상태로 보존됨 — 손실 없음)
+- 코드 외: 00:09 이후 대화에서 논의했을 다음 계획·결정 사항 — 이 항목이 유일한 손실
+
+---
+
+#### 2026-05-27 — Phase 5 구현 (TTS + 세션 모드 + 효과음 설계)
+
+**0c31a74 커밋 (15:16) — core/tts.py 신규 + 세션 모드**
+
+*왜 세션 모드를 도입했나:*
+기존 구조는 wake word → 발화 1회 → IDLE 복귀였다. 연속 대화를 하려면 매번 "크랭크 오토"를 불러야 해서 운전 중 사용성이 떨어졌다. wake word 1회로 세션을 열고 명시적 종료 또는 무응답으로 닫는 방식으로 전환.
+
+| 추가된 것 | 이유 |
+|----------|------|
+| `_session_active: bool` 플래그 | IDLE 복귀 시점을 종료 키워드/무응답으로 제어하기 위함 |
+| `_SESSION_CLOSE_KEYWORDS` ("슬립 오토", "sleep otto" 등) | 운전 중 자연스럽게 종료할 수 있는 명령어. STT 전사 레벨에서 처리해 LLM 호출 없이 바로 IDLE 복귀 |
+| `had_transcript` 플래그 | 빈 transcript(오탐, 노이즈)일 때는 세션 유지하지 않고 IDLE 복귀 |
+| `speak()` + `wake_detector.pause()/resume()` | TTS 재생 중 봇 자신의 음성이 wake word를 재트리거하는 에코 방지 |
+
+*왜 `speak_local()`을 별도로 만들었나:*
+Discord 봇 없이 터미널에서 TTS 품질을 검증하기 위해. ffmpeg→PCM→sounddevice로 로컬 스피커 출력. `tools/chat_test.py --tts` 플래그와 연동.
+
+*chat_test.py --tts 플래그가 미커밋으로 남은 이유:*
+같은 세션에서 작업했으나 커밋 시 staged에서 누락된 것으로 추정. 코드 자체는 working tree에 보존됨.
+
+---
+
+#### 2026-05-26 — Phase 4 구현 (LLM 텍스트 응답 파이프라인 + Hyundai/Map API 조사)
+
+**45cf6c9 커밋 (14:34) — LLM 파이프라인 초기 구현**
+
+*왜 providers 추상화를 만들었나:*
+단일 Anthropic 호출로 하드코딩하면 오프라인 폴백(Ollama), 인텐트별 모델 라우팅(Haiku vs Sonnet)을 나중에 추가하기 어렵다. `LLMProvider` Protocol로 추상화해 인텐트 분류기가 프로바이더 구분 없이 동일하게 호출.
+
+*왜 Patch 3 (`_LowLatencyJitterBuffer`)를 추가했나:*
+기존 `HeapJitterBuffer`는 비순차 패킷이 maxsize(10개)까지 쌓여야 강제 팝 → ~200ms 블로킹. 패킷이 1-2개만 비순차여도 즉시 팝하도록 오버라이드. wake word 감지 지연 개선이 목적.
+
+*왜 PacketDecoder flush 경고를 억제했나:*
+발화가 끝날 때마다 Opus decoder가 내부 버퍼를 flush하면서 WARNING이 출력됨. 실제 오디오 손상이 아닌 정상 동작이므로 ERROR로 레벨 상향(실질적 억제).
+
+*왜 `time.monotonic()` deadline 방식으로 교체했나:*
+기존 `total_frames >= max_frames` 방식은 VAD 청크 크기(512 샘플)와 캡처 버퍼 청크 크기가 달라 프레임 수 계산이 부정확했음. wall-clock 기반 deadline이 더 신뢰도 높음.
+
+**2a47dc7 커밋 (16:19) — dual-response 시스템 프롬프트 + chat_test.py**
+
+*왜 JSON dual-response 포맷을 강제했나:*
+LLM에게 voice_response와 text_response를 하나의 응답에서 동시에 요청하면 마크다운(`**`, `##`)이 voice에 섞이거나 두 응답의 길이 비율이 제멋대로가 됨. JSON 스키마 강제로 voice는 짧게(음성 최적화), text는 상세하게 구조화.
+
+*왜 `parse_dual_response()`에 코드 펜스 스트립과 폴백을 넣었나:*
+Claude가 JSON을 ` ```json ... ``` ` 코드 펜스로 감싸서 반환하는 경우가 있음. 파싱 실패 시 전체 텍스트를 voice_response로 처리하는 폴백으로 빈 응답 방지.
+
+*왜 3-tier intent routing으로 단순화했나:*
+매뉴얼의 `note.create`, `calendar.read`, `calendar.write`, `research`, `simple_qa` 5분류는 MCP 툴이 없는 Phase 4에서는 의미 없음. `default(Sonnet)`, `trivial(Haiku)`, `complex_reasoning(Opus)` 3분류로 단순화해 Phase 6에서 툴 기반 라우팅으로 교체 예정.
+
+**Hyundai Bluelink API + 카카오맵/Tmap 조사 (docs/):**
+- Phase 6.5 차량 데이터 연동을 위한 사전 조사
+- Bluelink: 공식 개발자 포털 OAuth 2.0 경로 확인, 읽기 가능 API 카테고리 5종 파악
+- 지도: 카카오맵이 전시 데모에 유리 (무료 한도, Python 예제 풍부). Tmap은 경로 탐색 정확도 우위.
+- 결론: 역지오코딩·POI 검색=카카오맵, 자동차 경로=Tmap 역할 분담 권장
+
+---
 
 #### 2026-05-22 — Phase 1 마무리 + Phase 2 wake word 시행착오 및 피벗
 

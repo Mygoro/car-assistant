@@ -6,3 +6,4 @@ __pycache__/
 archive/audio/debug/
 silero_vad.onnx
 wake_word/*.ppn
+otto_events.log
