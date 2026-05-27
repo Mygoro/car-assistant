@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from core.audio_sink import CarAudioSink
 from core.orchestrator import Orchestrator
 from core.stt import STTEngine
+from core.tts import ElevenLabsTTS, speak
 from core.vad import SileroVAD
 from core.wake_word import WakeWordDetector
 
@@ -60,6 +61,12 @@ orchestrator = Orchestrator(
     anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
 )
 
+tts = ElevenLabsTTS(
+    api_key=os.environ.get("ELEVENLABS_API_KEY", ""),
+    voice_id=os.environ.get("ELEVENLABS_VOICE_ID", ""),
+    model=_cfg["tts"]["model"],
+)
+
 
 class BotState(enum.Enum):
     IDLE = "idle"
@@ -68,6 +75,13 @@ class BotState(enum.Enum):
 
 
 _state = BotState.IDLE
+
+# 세션 모드: wake word 1회로 열리고 명시적 종료 or 무응답까지 유지
+_session_active: bool = False
+_SESSION_CLOSE_KEYWORDS = {
+    "슬립 오토", "sleep otto",   # 주 종료 명령어
+    "그만", "종료해", "닫아", "끝내", "오토 꺼", "세션 종료",  # 폴백
+}
 
 # 녹음 모드 상태 (학습 데이터 수집용)
 _recording = False
@@ -168,8 +182,9 @@ async def audio_processor():
 
             if _state == BotState.IDLE:
                 if await wake_detector.process(chunk):
-                    log.info("WAKE WORD DETECTED")
+                    log.info("WAKE WORD DETECTED — session open")
                     _state = BotState.LISTENING
+                    _session_active = True
                     wake_detector.pause()
                     asyncio.create_task(_notify_wake_word())
                     asyncio.create_task(_capture_and_transcribe())
@@ -189,8 +204,8 @@ async def _notify_wake_word():
 
 
 async def _capture_and_transcribe():
-    """LISTENING: VAD로 발화 캡처 → STT → Discord 게시."""
-    global _state
+    """LISTENING: VAD로 발화 캡처 → STT → LLM+TTS → 세션 유지 or 종료."""
+    global _state, _session_active
 
     vad = SileroVAD(threshold=_cfg["vad"]["threshold"])
     tail_frames = int(_cfg["vad"]["tail_ms"] / 32)      # 32ms per VAD chunk
@@ -243,6 +258,7 @@ async def _capture_and_transcribe():
                 done = True
                 break
 
+    had_transcript = False
     try:
         if capture_buf:
             audio = np.concatenate(capture_buf)
@@ -254,17 +270,31 @@ async def _capture_and_transcribe():
                 log.exception("STT error")
                 transcript = ""
             if transcript:
+                had_transcript = True
                 log.info("Transcript: %s", transcript)
                 await _post_transcript(transcript)
-                asyncio.create_task(_run_llm(transcript))
+                # 종료 키워드 확인
+                if any(kw in transcript for kw in _SESSION_CLOSE_KEYWORDS):
+                    _session_active = False
+                    log.info("Session close keyword detected")
+                # 세션 모드: TTS 완료까지 대기 (에코 방지)
+                await _run_llm(transcript)
             else:
                 log.info("STT returned empty transcript")
     finally:
-        # 다음 캡처를 위해 잔여 큐 비우기
         while not capture_queue.empty():
             capture_queue.get_nowait()
-        _state = BotState.IDLE
-        wake_detector.resume()
+        if _session_active and had_transcript:
+            # 세션 유지 — 다음 발화 즉시 대기
+            _state = BotState.LISTENING
+            asyncio.create_task(_capture_and_transcribe())
+            log.info("Session continuing — listening for next utterance")
+        else:
+            # 무응답(8초 timeout) / 빈 transcript / 종료 키워드 → IDLE
+            _session_active = False
+            _state = BotState.IDLE
+            wake_detector.resume()
+            log.info("Session closed — returned to IDLE")
 
 
 async def _post_transcript(transcript: str):
@@ -288,8 +318,10 @@ async def _run_llm(transcript: str):
 
         log.info("voice_response (%d chars): %s", len(voice), voice[:80])
 
-        # Phase 5: voice_response를 TTS 파이프라인에 전달
-        # await tts_pipeline(voice)
+        if voice and voice_client and voice_client.is_connected():
+            await speak(voice_client, tts, voice, wake_detector=wake_detector)
+        elif voice:
+            log.warning("voice_client not connected — TTS skip")
 
         if ch and text:
             await ch.send(f"🤖 {text}")
