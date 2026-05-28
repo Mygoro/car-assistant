@@ -20,24 +20,19 @@ Byunghun Kwon · 2022195171
 
 ### ⚡ 다음 세션 시작 지점 (2026-05-28 이후)
 
-**확인할 것 1 — 미커밋 파일**
-```
-tools/chat_test.py     # --tts 플래그 uncommitted (Phase 5 세션에서 누락)
-Otto enter.mp3         # cue 효과음 (git add 후 커밋 필요)
-Otto quit.mp3
-exhibition/            # 전시 설계 문서 (git add 후 커밋 필요)
-docs/hyundai-api-survey.md
-docs/map-api-survey.md
-```
-전부 `git add` 후 커밋.
+**최우선 — GPU 이식 (밖에서는 불가, 데스크탑 복귀 시)**
+`git clone` → `uv sync` → `.env` 복사 → `config.yaml` (`device: cuda`, `compute_type: int8_float16`) → `uv run bot.py` → "크랭크 오토" 테스트.
+CPU에서 STT 11~13s → GPU 이식 시 1~2s 예상. 이식 없이는 실사용 불가.
 
-**확인할 것 2 — CPU→GPU 이식 (로드맵 5/24 예정이었으나 미완)**
-이식 없이 Phase 4/5까지 노트북 CPU로 진행함. STT가 12~40초로 느림 (otto_events.log 실측).
-Phase 6(MCP) 구현은 CPU에서도 가능하나, 실사용·전시 품질을 위해 이식이 시급.
+**GPU 이식 후 — Phase 4+5 E2E 검증 필수 (현재 미검증)**
+- Phase 4: Wake word → 발화 → Discord 채팅 채널 LLM 응답 게시 (마크다운 없음, 히스토리 동작)
+- Phase 5: Wake word → 발화 → Discord 음성 채널 TTS 응답 (에코 방지, 세션 모드, cue 동작)
+- E2E 검증 통과 후 Phase 6 진입.
 
 **다음 작업: Phase 6**
 `docs/implementation-manual.md` Phase 6 섹션 참고.
 우선순위: Calendar read → Notion read → Phase 6.5 mock vehicle provider.
+MCP 클라이언트 인프라: `mcp` 패키지 추가 필요 (`uv add mcp`). Calendar/Notion MCP 서버 설치 필요.
 
 ### 확정된 아키텍처 (Phase 5 완료 기준)
 ```
@@ -103,6 +98,44 @@ otto_events.log를 보면 2026-05-27 23:36~23:39 테스트에서 발견된 문�
 - 코드: `tools/chat_test.py` --tts 플래그 (unstaged 상태로 보존됨 — 손실 없음)
 - 코드 외: 00:09 이후 대화에서 논의했을 다음 계획·결정 사항 — 이 항목이 유일한 손실
 
+**b97c596 커밋 (2026-05-28 01:25) — cue 재생 직렬화 + 구간 추출**
+
+ba2c264 테스트에서 발견: enter cue와 발화 캡처 Task가 `create_task`로 동시 시작 → cue(0.9s) 재생 중 타임아웃(1.5s)이 이미 소모되어 실질 대기 0.6s밖에 안 남는 구조적 결함.
+
+| 수정 내용 | 이전 | 이후 |
+|----------|------|------|
+| cue + 캡처 타이밍 | `create_task` 동시 시작 | `await play_cue()` 완료 후 `create_task(_capture)` 생성 |
+| cue 파일 | `Otto enter.mp3` (6.82s 전체) | `cues/otto_enter.mp3` (0~0.905s 추출, ffmpeg trim+fade) |
+| quit cue | `Otto quit.mp3` (9.27s 전체) | `cues/otto_quit.mp3` (2.938~4.603s 추출, 당시 오류 포함) |
+| 세션 종료 cue 타이밍 | cue와 `wake_detector.resume()` 동시 | cue 완료 후 resume (cue 중 재감지 방지) |
+
+**fcf8b2b 커밋 (2026-05-28 02:16) — quit cue 무음 버그 + STT hallucination 필터**
+
+| 문제 | 원인 | 수정 |
+|------|------|------|
+| quit cue 무음 | `-ss -to` 옵션 조합이 해당 ffmpeg 버전에서 오작동 → 실제로는 무음 구간 추출됨 (volumedetect max -91 dB) | `ffprobe` 챕터 메타데이터 확인 → `atrim=start=2.905:end=6.538` 재추출 (max -11 dB 정상) |
+| STT hallucination | Whisper known issue — 무음/배경소음 구간에 학습 데이터 문구 삽입 ("자막 제공 및..." 등) | `no_speech_threshold=0.6`, `condition_on_previous_text=False`, known 패턴 블랙리스트 필터 추가 |
+
+**bd6ba91 커밋 (2026-05-28 02:23) — TTS 진짜 스트리밍**
+
+기존 `speak()`는 ElevenLabs MP3 전부 수신 → ffmpeg 전체 디코딩 → Discord 재생 순서라 첫 소리까지 7~10초 소요. 근본적으로 재설계.
+
+| 변경 | 이전 | 이후 |
+|------|------|------|
+| TTS 재생 방식 | 전체 수신 후 재생 | `_StreamingPCMAudio` 클래스 — ffmpeg 생산과 Discord 소비를 `queue.Queue`로 브릿지, 첫 PCM 청크 도착 즉시 `voice_client.play()` |
+| TTS 첫음절 지연 | 7~10s | 0.72s (실측, ElevenLabs 요청 후 기준) |
+| 스레드 경계 | — | Discord 오디오 스레드가 동기 환경 → `asyncio.Queue` 불가, `queue.Queue` 사용. `read()` 시 `queue.Empty`이면 무음 반환으로 재생 끊김 방지 |
+
+현재 타이밍 프로파일 (CPU 노트북 실측):
+
+| 단계 | 실측 |
+|------|------|
+| VAD tail | 1.5s |
+| STT | 11.9s (GPU 이식 시 1~2s 예상) |
+| LLM→voice_response | 2.8s |
+| TTS 첫음절 | 0.72s |
+| 말 멈춤→첫 소리 합계 | ~16s (GPU 후 ~5~6s 목표) |
+
 ---
 
 #### 2026-05-27 — Phase 5 구현 (TTS + 세션 모드 + 효과음 설계)
@@ -159,6 +192,35 @@ Claude가 JSON을 ` ```json ... ``` ` 코드 펜스로 감싸서 반환하는 �
 - Bluelink: 공식 개발자 포털 OAuth 2.0 경로 확인, 읽기 가능 API 카테고리 5종 파악
 - 지도: 카카오맵이 전시 데모에 유리 (무료 한도, Python 예제 풍부). Tmap은 경로 탐색 정확도 우위.
 - 결론: 역지오코딩·POI 검색=카카오맵, 자동차 경로=Tmap 역할 분담 권장
+
+---
+
+#### 2026-05-23 — Phase 2 완료 (디버깅) + Phase 3 STT 통합
+
+**6d69776 커밋 (01:22) — Phase 2 완료 (크랭크 오토, openwakeword)**
+
+세션 시작 시점에 `wake_word.py`가 openwakeword가 아닌 Whisper 기반으로 교체되어 있었음. 복구 후 두 가지 근본 원인을 발견:
+
+| 버그 | 원인 | 수정 |
+|------|------|------|
+| 모든 프레임 점수 0.0 | `AudioFeatures.__call__()`은 int16 PCM을 받아야 하는데 float32 전달 → mel spectrogram이 오디오를 무음으로 해석 | PCM dtype float32 → int16 변경, 훈련 경로도 동일하게 통일 |
+| 감지 불안정 | CONFIRM_FRAMES streak 메커니즘이 코드 복구 시 누락됨 | `_streak` 카운터 복원 |
+
+임계값 튜닝: `CONFIRM_FRAMES=2, threshold=0.85` 최종 확정. 훈련 결과 recall 100%, specificity 97.6%.
+
+**5e7c87a 커밋 (05:18) — Phase 3 STT 통합**
+
+| 컴포넌트 | 내용 |
+|---------|------|
+| `core/vad.py` | ONNX Runtime 기반 SileroVAD. v2/v3/v4 API 동적 감지. **핵심: 해당 silero_vad.onnx는 8kHz 전용** — 16kHz 입력 시 모든 프레임 ~0.001로 무음 처리됨. `audioop.ratecv`로 16kHz→8kHz 다운샘플 후 입력. |
+| `core/stt.py` | faster-whisper `WhisperModel` 래퍼. `run_in_executor`로 비동기 처리. |
+| `bot.py` | `capture_queue` 분리: `pcm_queue`(전체 스트림)와 별개로 LISTENING 상태에서만 채워지는 캡처 전용 큐. 두 코루틴이 동일 큐 경쟁 소비하는 버그 수정. `MIN_SPEECH=5` 가드: wake word 꼬리 에코가 speech_started 조기 트리거하는 문제 방어. |
+
+Phase 3 품질 검증 통과 (CPU 모드 한정). 단, STT 지연 최대 42s (28.5s 오디오 기준) → GPU 이식 시 해결 예정.
+
+*왜 Phase 4를 GPU E2E 없이 진입했나:* CPU에서 large-v3 전사 지연이 42s에 달해 STT 기능 자체는 검증됐으나 실사용 품질은 GPU 이식 없이 확인 불가. GPU 이식보다 LLM 연결(Phase 4) 코드 작업을 먼저 진행하는 게 병렬 효율이 높다고 판단. Phase 4 단위 테스트는 스텁 + CLI로 마이크 없이 검증 가능.
+
+**58c5f0a 커밋 (05:26) — 다음 세션 시작 지점 문서화**
 
 ---
 

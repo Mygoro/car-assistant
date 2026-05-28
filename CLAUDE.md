@@ -25,11 +25,14 @@
   - Phase 0 — Discord 봇 기초 (자동 접속, 재접속 watchdog)
   - Phase 1 — 오디오 수신 및 저장 (DAVE E2E 패치 적용, WAV 디버그 검증)
   - Phase 2 — Wake Word 게이트 (크랭크 오토, openwakeword, threshold=0.85, CONFIRM_FRAMES=1)
-  - Phase 3 — STT 통합 (Silero VAD 8kHz + faster-whisper large-v3, 품질 검증 통과)
+  - Phase 3 — STT 통합 (Silero VAD 8kHz + faster-whisper large-v3, capture_queue 분리, MIN_SPEECH 가드)
+  - Phase 4 — LLM 텍스트 응답 (3-tier 인텐트, Orchestrator, dual-response JSON, voice-first 스트리밍)
+  - Phase 5 — ElevenLabs TTS 스트리밍 (`_StreamingPCMAudio`), Discord 음성 송출, 세션 모드, 효과음 cue
   - 전시 로드맵 설계 (2026-06-02 전시 + 2026-06-09 문서 제출)
 - **다음 (세션 시작 시 반드시)**
   1. **데스크탑 이식** — `git clone` → `uv sync` → `.env` → config.yaml `device: cuda` / `compute_type: int8_float16` → `uv run bot.py` → 동작 확인
-  2. **Phase 4** — LLM 텍스트 응답 (implementation-manual.md Phase 4 섹션)
+  2. **Phase 4+5 E2E 검증** — GPU 이식 후 실제 마이크로 wake word → STT → LLM → TTS 전 구간 검증 (현재 CPU에서 미검증)
+  3. **Phase 6** — MCP 툴 통합 (Calendar read, Notion read)
 
 ---
 
@@ -51,7 +54,9 @@
 4. **에러를 삼키지 않는다.** `except Exception: pass` 금지. 항상 로깅하고 사용자가 알아야 할 것은 알린다.
 5. **모델 인스턴스는 봇 시작 시 한 번만 생성한다.** 매 호출마다 재로드 금지.
 6. **민감 값은 `.env`에만 저장.** 코드에 하드코딩 금지.
-7. **세션 종료 시 변경사항을 documentation에 기록한다.** (다큐멘팅 에이전트 설계 후 자동화 예정)
+7. **세션 종료 또는 `/log` 시 두 문서를 반드시 갱신한다.**
+   - `docs/project-archive.md` — 날짜별 작업 내역, 결정 사항, 다음 시작 지점
+   - `docs/implementation-manual.md` — 완료된 Phase 섹션을 실제 구현에 맞게 수정 (설계와 달라진 부분 반드시 반영)
 8. **테스트 시 반드시 `otto_events.log`를 확인한다.** 콘솔 스팸 때문에 중요한 이벤트가 묻히므로, 문제 진단 시 로그 파일을 먼저 읽고 판단한다. 새 터미널에서 열려도 이 습관을 유지할 것.
 
 ---
@@ -63,7 +68,7 @@
 - 시연 방식: 본인 시연 기본, 방문자 직접 호출 확장, 데모 영상 폴백
 - 음성 데이터: 저장 없음, 즉시 폐기
 - 동의: 안내문 + 구두 안내
-- Wake word: "hey otto" (openwakeword 커스텀 모델, 화자 독립)
+- Wake word: "크랭크 오토" (openwakeword 커스텀 모델, 화자 독립)
 - 차량: 지하 주차, 차내 캠 송출 가능
 
 ---
@@ -87,18 +92,30 @@ car-assistant/
 ├── .env (gitignored)
 ├── core/
 │   ├── audio_sink.py
+│   ├── wake_word.py
+│   ├── vad.py
+│   ├── stt.py
+│   ├── orchestrator.py
+│   ├── tts.py
+│   ├── memory.md
+│   ├── system_prompt_template.txt
 │   └── providers/
 ├── wake_word/
+│   └── crank_otto.onnx
+├── cues/
+│   ├── otto_enter.mp3
+│   └── otto_quit.mp3
 ├── fillers/
-├── archive/
-│   ├── sessions/
-│   ├── daily/
-│   ├── artifacts/
-│   └── audio/
+├── tools/
+│   ├── chat_test.py
+│   ├── train_wake_word.py
+│   └── generate_tts_samples.py
 ├── docs/
 │   ├── implementation-manual.md
-│   └── project-archive.md
-└── exhibition/ (설계자 산출물 예정)
+│   ├── project-archive.md
+│   ├── hyundai-api-survey.md
+│   └── map-api-survey.md
+└── exhibition/
     ├── roadmap.md
     ├── booth-plan.md
     └── demo-script.md

@@ -292,31 +292,33 @@ def write(self, user, data):
 
 ## Phase 2 — Wake Word 게이트
 
+> **구현 완료 (2026-05-23). 아래는 실제 구현 기준.**
+
 ### 목표
 
-openwakeword가 들어오는 모든 PCM 청크를 검사하고, "hey otto"가 감지되면 이후 파이프라인을 활성화한다. TTS 송신 중에는 감지를 일시 정지한다.
+openwakeword가 들어오는 모든 PCM 청크를 검사하고, "크랭크 오토"가 감지되면 이후 파이프라인을 활성화한다. TTS 송신 중에는 감지를 일시 정지한다.
 
-### 구현 행동강령
+### wake word 선정 경위
 
-**core/wake_word.py:**
+처음에는 "hey otto"로 시작했으나 "헤이", "오토" 모두 한국어 일상 발화에서 흔한 단어여서 오탐이 심각했다. 15개 단일 화자 샘플로는 구성 음절과 전체 문장을 구별하는 결정 경계 학습이 불가능했다. threshold 0.90까지 상향해도 개선 미미. → **"크랭크 오토"로 피벗**: "크랭크"는 일상 대화에서 거의 사용되지 않고, 엔진 크랭킹 연상이 차량 AI 콘셉트와 부합.
+
+### 구현 — core/wake_word.py
 
 ```python
 from pathlib import Path
 import numpy as np
 from openwakeword.model import Model
 
-CHUNK_SAMPLES = 1280  # 80ms at 16kHz
+CHUNK_SAMPLES = 1280   # 80ms at 16kHz
+_CONFIRM_FRAMES = 1    # 연속 N 프레임 threshold 초과 시 감지 확정
 
 class WakeWordDetector:
-    def __init__(self, model_path: str, threshold: float = 0.5):
-        path = Path(model_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Wake word model not found: {path}")
-        self._model_name = path.stem
-        self._model = Model(wakeword_models=[str(path)], inference_framework="onnx")
+    def __init__(self, model_path: str, threshold: float = 0.85):
+        self._model = Model(wakeword_models=[str(model_path)], inference_framework="onnx")
         self._threshold = threshold
         self._paused = False
         self._buffer = np.array([], dtype=np.int16)
+        self._streak = 0
 
     def pause(self):
         self._paused = True
@@ -324,8 +326,10 @@ class WakeWordDetector:
     def resume(self):
         self._paused = False
         self._buffer = np.array([], dtype=np.int16)
+        self._streak = 0
 
     def process(self, pcm_chunk: np.ndarray) -> bool:
+        """pcm_chunk: int16 PCM (16kHz mono)"""
         if self._paused:
             return False
         self._buffer = np.concatenate([self._buffer, pcm_chunk])
@@ -335,394 +339,336 @@ class WakeWordDetector:
             prediction = self._model.predict(frame)
             score = max(prediction.values(), default=0.0)
             if score >= self._threshold:
-                self._model.reset()
-                self._buffer = np.array([], dtype=np.int16)
-                return True
+                self._streak += 1
+                if self._streak >= _CONFIRM_FRAMES:
+                    self._model.reset()
+                    self._buffer = np.array([], dtype=np.int16)
+                    self._streak = 0
+                    return True
+            else:
+                self._streak = 0
         return False
 ```
 
-**봇 메인 루프에서의 통합:**
+**중요: openwakeword는 int16 PCM을 입력받아야 한다.** float32([-1, 1]) 전달 시 mel spectrogram이 오디오를 무음으로 해석, 점수 0.0 고착.
 
-오디오 큐에서 청크를 꺼내 WakeWordDetector에 넘기는 비동기 루프를 만든다. Wake word가 감지되면 `LISTENING` 상태로 전환해 이후 청크를 캡처 버퍼로 보낸다. 상태는 단순하게 유지한다:
+### 커스텀 모델 학습 (`tools/train_wake_word.py`)
+
+자체 MLP 학습 스크립트. openwakeword `AudioFeatures.__call__(int16)` 스트리밍 경로로 임베딩 추출 후 MLP 학습 → ONNX 내보내기. 긍정 샘플은 `tools/generate_tts_samples.py`로 ElevenLabs 다화자 TTS 생성.
 
 ```
-IDLE → (wake word) → LISTENING → (VAD 종료) → PROCESSING → IDLE
+uv run tools/generate_tts_samples.py   # positive 샘플 생성
+!record positive                        # Discord 명령어로 실음성 추가 녹음
+uv run tools/train_wake_word.py        # 학습 → wake_word/crank_otto.onnx
 ```
 
-PROCESSING 중에는 wake word 감지를 자동으로 일시 정지한다.
+### 확정 설정값
 
-**openwakeword 커스텀 모델 학습 절차:**
+```yaml
+wake_word:
+  model_path: "wake_word/crank_otto.onnx"
+  threshold: 0.85     # CONFIRM_FRAMES=1 조합으로 안정적
+```
 
-1. "hey otto" 발화 샘플 10~20개 녹음 (WAV, 16kHz mono)
-2. openwakeword training 스크립트 실행:
-   ```bash
-   python -m openwakeword.train --positive_reference_clips path/to/samples/ \
-       --output_dir wake_word/ --model_name hey_otto
-   ```
-3. 생성된 `hey_otto.onnx`를 `wake_word/` 디렉토리에 저장
-4. `config.yaml`의 `model_path: "wake_word/hey_otto.onnx"` 확인
+### 품질 검증 결과 (완료)
 
-### 품질 검증
-
-- [ ] "hey otto"라고 말하면 봇 콘솔에 `WAKE WORD DETECTED` 로그가 출력된다
-- [ ] Wake word 없이 일반 대화를 해도 콘솔에 감지 로그가 나오지 않는다
-- [ ] 봇이 TTS를 송출하는 중(Phase 5 이후 검증)에는 봇 목소리로 wake word가 재트리거되지 않는다
-- [ ] 봇이 6시간 이상 실행되어도 메모리 누수 없이 안정적으로 작동한다 (작업 관리자 또는 htop으로 확인)
-
-### 임계값 조정 지침
-
-`config.yaml`의 `threshold` 값:
-- 0.3: 오탐 거의 없음, 명확한 발음만 감지
-- 0.5: 권장 초기값
-- 0.7: 민감하게 감지, 유사 발음에 오탐 가능
-
-0.5로 시작하고 실제 사용 중 오탐 또는 미감지가 발생하면 조정한다.
+- [x] "크랭크 오토"라고 말하면 봇 콘솔에 `WAKE WORD DETECTED` 로그 출력
+- [x] Wake word 없이 일반 대화해도 미감지
+- [x] TTS 송출 중 재트리거 없음 (`pause()/resume()` 작동 확인)
 
 ---
 
 ## Phase 3 — STT 통합
 
+> **구현 완료 (2026-05-23). 아래는 실제 구현 기준.**
+
 ### 목표
 
 Wake word 이후 발화를 캡처하고, Silero VAD로 발화 종료를 감지하고, faster-whisper로 한국어 트랜스크립트를 생성하고, Discord 채팅 채널에 게시한다.
 
-### 구현 행동강령
+### core/vad.py — 핵심 주의사항
 
-**core/vad.py:**
-
-Silero VAD 모델을 ONNX Runtime으로 로드한다. Torch 없이 사용 가능한 것이 핵심이다.
+**해당 silero_vad.onnx 모델은 8kHz 전용이다.** 16kHz 입력 시 모든 프레임이 ~0.001로 나와 무음 처리됨. 파이프라인 나머지는 16kHz 유지하고, VAD 내부에서만 다운샘플링.
 
 ```python
+import audioop
 import numpy as np
 import onnxruntime as ort
-from pathlib import Path
 
 class SileroVAD:
-    """Silero VAD via ONNX Runtime (no PyTorch dependency)."""
-    def __init__(self, threshold: float = 0.5):
-        model_path = self._ensure_model()
-        self.session = ort.InferenceSession(str(model_path))
+    def __init__(self, threshold: float = 0.3):
+        self.session = ort.InferenceSession("silero_vad.onnx")
         self.threshold = threshold
-        self._h = np.zeros((2, 1, 64), dtype=np.float32)
-        self._c = np.zeros((2, 1, 64), dtype=np.float32)
-        self._sr = np.array(16000, dtype=np.int64)
+        self._h = np.zeros((2, 1, 128), dtype=np.float32)  # v4: (2,1,128) 고정
+        self._c = np.zeros((2, 1, 128), dtype=np.float32)
+        self._sr = np.array(8000, dtype=np.int64)
 
-    def _ensure_model(self) -> Path:
-        path = Path("silero_vad.onnx")
-        if not path.exists():
-            import urllib.request
-            urllib.request.urlretrieve(
-                "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx",
-                path,
-            )
-        return path
-
-    def is_speech(self, pcm_chunk: np.ndarray) -> bool:
-        """chunk must be 512 samples (32ms) at 16kHz, float32 normalized to [-1, 1]."""
-        audio = pcm_chunk.astype(np.float32) / 32768.0
+    def is_speech(self, pcm_16k_chunk: np.ndarray) -> bool:
+        """입력: int16 PCM 16kHz. 내부에서 8kHz로 다운샘플 후 모델 입력."""
+        pcm_bytes = pcm_16k_chunk.tobytes()
+        downsampled, _ = audioop.ratecv(pcm_bytes, 2, 1, 16000, 8000, None)
+        audio = np.frombuffer(downsampled, dtype=np.int16).astype(np.float32) / 32768.0
         audio = audio[np.newaxis, :]
         out, self._h, self._c = self.session.run(
-            None,
-            {"input": audio, "sr": self._sr, "h": self._h, "c": self._c},
+            None, {"input": audio, "sr": self._sr, "h": self._h, "c": self._c}
         )
         return float(out[0][0]) > self.threshold
 
     def reset(self):
-        self._h = np.zeros((2, 1, 64), dtype=np.float32)
-        self._c = np.zeros((2, 1, 64), dtype=np.float32)
+        self._h = np.zeros((2, 1, 128), dtype=np.float32)
+        self._c = np.zeros((2, 1, 128), dtype=np.float32)
 ```
 
-**core/stt.py:**
+### core/stt.py — hallucination 필터 포함
 
 ```python
 from faster_whisper import WhisperModel
 import numpy as np
 
+_HALLUCINATION_BLACKLIST = [
+    "자막 제공 및 광고를 포함하고 있습니다",
+    "MBC 뉴스",  # 필요 시 확장
+]
+
 class STTEngine:
-    def __init__(self, model_size: str, device: str, compute_type: str,
-                 language: str, initial_prompt: str):
+    def __init__(self, model_size, device, compute_type, language, initial_prompt):
         self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
         self.language = language
         self.initial_prompt = initial_prompt
 
     async def transcribe(self, pcm_16k_mono: np.ndarray) -> str:
-        """PCM int16 → Korean transcript string."""
         audio = pcm_16k_mono.astype(np.float32) / 32768.0
         import asyncio
         loop = asyncio.get_event_loop()
-        segments, _ = await loop.run_in_executor(
-            None,
-            lambda: self.model.transcribe(
+
+        def _run():
+            segs, _ = self.model.transcribe(
                 audio,
                 language=self.language,
                 initial_prompt=self.initial_prompt,
                 beam_size=5,
                 vad_filter=True,
-            ),
-        )
-        return "".join(seg.text for seg in segments).strip()
+                no_speech_threshold=0.6,           # 무음 세그먼트 자동 폐기
+                condition_on_previous_text=False,  # 이전 컨텍스트 hallucination 전파 방지
+            )
+            return list(segs)
+
+        segments = await loop.run_in_executor(None, _run)
+        text = "".join(seg.text for seg in segments).strip()
+
+        for pattern in _HALLUCINATION_BLACKLIST:
+            if pattern in text:
+                return ""
+        return text
 ```
 
-**발화 캡처 로직:**
+### 발화 캡처 아키텍처 — capture_queue 분리
 
-Wake word 감지 → VAD 기반 발화 캡처. `tail_ms`는 config에서 읽는다 (기본값 4000ms):
+`pcm_queue`(전체 오디오 스트림)와 `capture_queue`(LISTENING 상태 전용)를 분리. 두 코루틴이 동일 큐를 경쟁 소비하면 청크가 번갈아 분배되어 VAD가 불연속 오디오를 받는 문제 방지.
 
 ```
-LISTENING 상태 진입
-  while True:
-    chunk = audio_queue.get()
-    capture_buffer.append(chunk)
-    if vad.is_speech(chunk):
-        silent_frames = 0
-    else:
-        silent_frames += 1
+audio_processor():
+    chunk = await pcm_queue.get()
+    wake_detector.process(chunk)          # 항상 실행
+    if state == LISTENING:
+        capture_queue.put_nowait(chunk)   # 캡처 큐로만 라우팅
 
-    if silent_frames >= tail_frames:  # tail_ms / 32ms = 4000 / 32 = 125 프레임
-        break
-    if len(capture_buffer) * 32ms >= max_duration_s * 1000:
-        break
+_capture_and_transcribe():
+    MIN_SPEECH = 5   # 연속 5프레임(160ms) 이상 speech 판정 시에만 발화 시작으로 인정
+    speech_started = False
+    pre_speech_buffer = deque(maxlen=pre_speech_limit)
+    capture_buffer = []
+    silent_frames = 0
 
-transcript = await stt.transcribe(concat(capture_buffer))
+    while True:
+        chunk = await capture_queue.get()
+        is_speech = vad.is_speech(chunk)
+
+        if not speech_started:
+            pre_speech_buffer.append(chunk)
+            if is_speech:
+                speech_count += 1
+                if speech_count >= MIN_SPEECH:
+                    speech_started = True
+                    capture_buffer = list(pre_speech_buffer)
+        else:
+            capture_buffer.append(chunk)
+            if not is_speech:
+                silent_frames += 1
+            else:
+                silent_frames = 0
+
+            if silent_frames >= tail_frames or elapsed >= max_duration_s:
+                break
+
+    transcript = await stt.transcribe(np.concatenate(capture_buffer))
 ```
 
-**Discord 채팅 채널 게시:**
+### 확정 설정값
 
-STT 결과를 `🎤 {transcript}` 형식으로 채팅 채널에 즉시 게시한다. LLM 응답이 아직 없어도 트랜스크립트만 먼저 보낸다.
+```yaml
+vad:
+  threshold: 0.3      # Discord 압축 오디오에서 낮은 임계값 필요
+  tail_ms: 1500       # Phase 5에서 단축 (3000 → 1500). 세션 모드에서 첫 턴 1.5s, 이후 3.0s 동적
+  max_duration_s: 30
+```
 
-### 품질 검증
+### 품질 검증 결과 (완료, CPU 한정)
 
-- [ ] Wake word 말하고 발화하면 채팅 채널에 트랜스크립트가 게시된다 (CPU 모드라 느릴 수 있음 — 기능 동작 여부만 확인)
-- [ ] 발화 중간에 4초 이상 침묵하면 발화 종료로 판정된다
-- [ ] 2–3초 침묵 후 말을 이어가면 같은 발화로 계속 캡처된다
-- [ ] 30초 이상 말해도 max_duration_s 제한에서 자동으로 발화가 종료된다
-- [ ] "오늘 기독교 강의 핵심 메모해줘" 같은 문장이 알아볼 수 있게 트랜스크립트된다
-- [ ] `WhisperModel`이 봇 시작 시 한 번만 로드되고, 매 호출마다 재로드되지 않는다
-
-### 흔한 실수
-
-- `WhisperModel`은 최초 1회만 초기화한다. `async def transcribe` 안에서 생성하지 않는다.
-- `faster-whisper`는 동기 API다. 이벤트 루프를 블로킹하지 않으려면 반드시 `run_in_executor`로 감싼다.
-- `vad_filter=True`를 faster-whisper에 전달하면 whisper 내부 VAD가 추가로 작동한다. Silero VAD와 이중으로 사용해도 문제없다.
+- [x] Wake word → 발화 → 채팅 채널 트랜스크립트 게시
+- [x] 3s 침묵 → 발화 종료 판정
+- [x] 30s max_duration 자동 종료
+- [x] 긴 복잡한 텍스트 정확도 통과 (한국어 게임 카드 텍스트)
+- [ ] GPU 환경 E2E 검증 미완료 (CPU에서 42s 소요 → GPU 이식 후 재확인)
 
 ---
 
 ## Phase 4 — LLM 텍스트 응답
 
+> **구현 완료 (2026-05-26). 아래는 실제 구현 기준.**
+
 ### 목표
 
-트랜스크립트를 LLM에 보내고 텍스트 응답을 받아 Discord 채팅 채널에 게시한다. 음성 출력은 이 Phase에서 없다. 프로바이더 추상화와 인텐트 분류기를 완성한다.
+트랜스크립트를 LLM에 보내고 텍스트 응답을 받아 Discord 채팅 채널에 게시한다.
 
-### 구현 행동강령
+### dual-response JSON 포맷
 
-**core/providers/base.py:**
+LLM은 단일 응답에서 `voice_response`(TTS용, 50~100자, 마크다운 금지)와 `text_response`(Discord 채팅용, 길이 무제한, 마크다운 허용)를 동시에 반환한다. 시스템 프롬프트는 `core/system_prompt_template.txt`에 저장하고 `{MEMORY_MD_INJECTION_POINT}`로 `core/memory.md` 내용을 주입.
 
-```python
-from typing import Protocol, AsyncIterator
-from dataclasses import dataclass
-
-@dataclass
-class Message:
-    role: str  # "user" | "assistant" | "system"
-    content: str
-
-@dataclass
-class Delta:
-    text: str
-    is_final: bool = False
-
-class LLMProvider(Protocol):
-    async def stream(
-        self,
-        messages: list[Message],
-        tools: list[dict],
-    ) -> AsyncIterator[Delta]: ...
+```json
+{
+  "voice_response": "오늘 오후 2시에 AI Agents 수업 있어요.",
+  "text_response": "## 오늘 일정\n- 14:00 AI Agents 강의 (공학관 201호)\n- 노션 글쓰기 과제 마감 오늘"
+}
 ```
 
-**core/providers/anthropic.py:**
-
-```python
-import anthropic
-from .base import Message, Delta
-
-class AnthropicProvider:
-    def __init__(self, api_key: str, model: str, max_tokens: int):
-        self.client = anthropic.AsyncAnthropic(api_key=api_key)
-        self.model = model
-        self.max_tokens = max_tokens
-
-    async def stream(self, messages, tools):
-        anthropic_messages = [
-            {"role": m.role, "content": m.content}
-            for m in messages if m.role != "system"
-        ]
-        system = next((m.content for m in messages if m.role == "system"), None)
-
-        async with self.client.messages.stream(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=system,
-            messages=anthropic_messages,
-            tools=tools if tools else [],
-        ) as stream:
-            async for text in stream.text_stream:
-                yield Delta(text=text)
-            yield Delta(text="", is_final=True)
-```
-
-**시스템 프롬프트:**
-
-```python
-SYSTEM_PROMPT = """
-당신은 사용자를 보조하는 음성 AI 어시스턴트입니다.
-
-사용자 컨텍스트:
-- 연세대학교 재학생, DigiTools/AI Agents 수강 중
-- 한국어로 주로 소통하며 영어 전문 용어도 사용
-- 주요 도구: Notion, Google Calendar, Claude Code, ElevenLabs, Krita MCP
-
-응답 지침:
-- 응답은 음성으로 전달된다
-- 마크다운 형식(##, **, ```)을 사용하지 않는다
-- 목록은 자연스러운 문장으로 표현한다
-- 불필요한 서두와 반복을 생략한다
-- 필요한 정보는 생략하지 않고 정확하게 전달한다
-""".strip()
-```
-
-**인텐트 분류기:**
-
-휴리스틱 우선, LLM 위임 두 번째:
+### 인텐트 분류 — 3-tier
 
 ```python
 def classify_intent(transcript: str) -> str:
     t = transcript.strip()
-    if any(kw in t for kw in ["기록", "메모", "노트", "저장"]):
-        return "note.create"
-    if any(kw in t for kw in ["일정", "캘린더", "약속", "몇 시", "언제"]):
-        if any(kw in t for kw in ["추가", "등록", "넣어", "잡아"]):
-            return "calendar.write"
-        return "calendar.read"
-    if any(kw in t for kw in ["찾아", "검색", "알아봐", "뭐야", "뭔지"]):
-        return "research"
-    return "simple_qa"
+    if any(p in t for p in ["몇 시", "지금 시각", "안녕", "하이", "고마워"]) and len(t) < 15:
+        return "trivial"          # → Haiku
+    if any(kw in t for kw in ["깊이 생각", "자세히 분석", "꼼꼼히"]):
+        return "complex_reasoning"  # → Opus
+    return "default"              # → Sonnet
 ```
 
-**대화 히스토리 관리:**
+5-tier(`note.create / calendar.read / calendar.write / research / simple_qa`)는 MCP 툴이 없는 단계에서 의미 없어 3-tier로 단순화. Phase 6에서 툴 기반 라우팅으로 확장 예정.
 
-최근 10턴을 메모리에 유지한다. 10턴을 초과하면 오래된 턴을 제거한다. 사용자가 "새로 시작해" 또는 "리셋"이라고 말하면 히스토리를 비운다.
+### voice-first 스트리밍 — Orchestrator.run_voice_first()
 
-### 품질 검증
+`voice_response` 완성 즉시 TTS Task를 시작하고, `text_response`는 병렬로 계속 생성. 전체 응답 완료를 기다릴 필요 없음.
 
-- [ ] Wake word → 발화 → 채팅 채널에 LLM 텍스트 응답이 게시된다
-- [ ] 응답이 마크다운 형식을 포함하지 않는다 (`**`, `##`, ` ``` ` 없음)
-- [ ] 간단한 질문에는 짧게, 설명이 필요한 질문에는 충분히 길게 응답한다
-- [ ] 연속된 대화에서 앞 발화의 컨텍스트를 기억한다 (히스토리 동작 확인)
-- [ ] "리셋"이라고 말하면 히스토리가 비워진다
+```python
+async def run_voice_first(self, transcript: str):
+    # voice_response 완성 즉시 yield ("voice", text)
+    # text_response 완성 후 yield ("text", text)
+```
+
+### 시스템 프롬프트 캐싱
+
+`core/providers/anthropic.py`에서 시스템 프롬프트에 `cache_control: {"type": "ephemeral"}` 적용. 매 턴 프롬프트 전체 재전송 비용 절감.
+
+### 확정 설정값
+
+```yaml
+llm:
+  default_model: "claude-sonnet-4-6"
+  max_tokens: 1000
+  history_turns: 10
+
+intent_routing:
+  "default": "anthropic/claude-sonnet-4-6"
+  "trivial": "anthropic/claude-haiku-4-5"
+  "complex_reasoning": "anthropic/claude-opus-4-7"
+  "offline_fallback": "ollama/qwen2.5:14b"
+```
+
+### 품질 검증 결과
+
+- [x] `chat_test.py` CLI로 dual-response JSON 정상 파싱 확인 (6개 시나리오)
+- [x] 응답에 마크다운 형식 없음
+- [x] 히스토리 동작 확인 (스텁 기반 단위 테스트 18개 통과)
+- [ ] Wake word → STT → LLM E2E 검증 미완료 (GPU 이식 후 수행)
 
 ---
 
 ## Phase 5 — TTS 음성 출력
 
+> **구현 완료 (2026-05-27~28). 아래는 실제 구현 기준.**
+
 ### 목표
 
-LLM 텍스트 응답을 ElevenLabs로 스트리밍 변환하고 Discord 음성 채널로 송출한다. LLM 생성과 TTS 변환과 Discord 송신이 파이프라인으로 겹쳐서 실행된다.
+LLM 텍스트 응답을 ElevenLabs로 스트리밍 변환하고 Discord 음성 채널로 송출한다.
 
-### 구현 행동강령
+### TTS 진짜 스트리밍 — _StreamingPCMAudio
 
-**core/tts.py:**
-
-```python
-import httpx
-from typing import AsyncIterator
-
-class ElevenLabsTTS:
-    BASE_URL = "https://api.elevenlabs.io/v1"
-
-    def __init__(self, api_key: str, voice_id: str, model: str):
-        self.api_key = api_key
-        self.voice_id = voice_id
-        self.model = model
-
-    async def stream_mp3(self, text: str) -> AsyncIterator[bytes]:
-        """Stream MP3 bytes for given text."""
-        url = f"{self.BASE_URL}/text-to-speech/{self.voice_id}/stream"
-        headers = {
-            "xi-api-key": self.api_key,
-            "Content-Type": "application/json",
-            "Accept": "audio/mpeg",
-        }
-        body = {
-            "text": text,
-            "model_id": self.model,
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
-        }
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream("POST", url, headers=headers, json=body) as resp:
-                resp.raise_for_status()
-                async for chunk in resp.aiter_bytes(chunk_size=1024):
-                    yield chunk
-```
-
-**Discord 음성 송신 파이프라인:**
-
-ElevenLabs는 MP3를 반환한다. Discord는 PCM 48kHz stereo를 요구한다. ffmpeg async subprocess를 파이프라인으로 연결한다:
+ElevenLabs MP3 전체 수신 후 재생하면 첫 소리까지 7~10s 소요. `_StreamingPCMAudio` 클래스로 ffmpeg PCM 생산(async)과 Discord 오디오 스레드 소비를 `queue.Queue`로 브릿지. 첫 PCM 청크 도착 즉시 `voice_client.play()` 호출.
 
 ```python
-import asyncio
-import io
+import queue
 import discord
 
-async def speak(voice_client: discord.VoiceClient, mp3_stream):
-    ffmpeg_proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-i", "pipe:0",
-        "-f", "s16le", "-ar", "48000", "-ac", "2",
-        "-loglevel", "quiet",
-        "pipe:1",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-    )
+class _StreamingPCMAudio(discord.AudioSource):
+    def __init__(self):
+        self._q: queue.Queue[bytes | None] = queue.Queue()
 
-    async def feed_input():
-        async for chunk in mp3_stream:
-            ffmpeg_proc.stdin.write(chunk)
-        ffmpeg_proc.stdin.close()
+    def push(self, data: bytes):
+        self._q.put(data)
 
-    async def read_output():
-        pcm_buffer = b""
-        while True:
-            chunk = await ffmpeg_proc.stdout.read(3840)
-            if not chunk:
-                break
-            pcm_buffer += chunk
-        return pcm_buffer
+    def finish(self):
+        self._q.put(None)  # sentinel
 
-    feed_task = asyncio.create_task(feed_input())
-    pcm_data = await read_output()
-    await feed_task
+    def read(self) -> bytes:
+        try:
+            chunk = self._q.get(timeout=0.02)
+            if chunk is None:
+                return b""
+            return chunk
+        except queue.Empty:
+            return b"\x00" * 3840  # 무음 반환으로 재생 끊김 방지
 
-    source = discord.PCMAudio(io.BytesIO(pcm_data))
-    voice_client.play(source)
-    while voice_client.is_playing():
-        await asyncio.sleep(0.1)
+    def is_opus(self) -> bool:
+        return False
 ```
 
-**스트리밍 TTS → LLM 연동:**
+`speak()` 내부에서 `_feed_mp3` Task(ElevenLabs→ffmpeg stdin)와 `_read_pcm` Task(ffmpeg stdout→source.push)를 병렬 실행. 첫 청크 도착 즉시 `voice_client.play(source)` 호출.
 
-LLM 스트림에서 텍스트가 누적되면 문장 단위로 TTS에 보낸다. 문장 구분자: `。`, `.`, `!`, `?`, `\n`. 10자 미만 조각은 다음 조각과 합쳐서 보낸다.
+**실측 타이밍 (CPU 노트북 기준):**
+- TTS 첫음절: 0.72s (ElevenLabs 요청 후)
+- LLM→voice_response: 2.8s
+- 말 멈춤→첫 소리: ~16s (GPU 이식 후 ~5~6s 목표)
 
-**TTS 중 wake word 일시 정지:**
+### 세션 모드
 
+wake word 1회로 세션을 열고 여러 턴 연속 대화 후 명시적 종료 또는 무응답으로 닫는다.
+
+```
+IDLE → (wake word) → [enter cue] → LISTENING(첫 턴 1.5s tail)
+  → (발화) → STT → LLM → TTS → [enter cue] → LISTENING(이후 턴 3.0s tail)
+  → ("슬립 오토" or 무응답 3s) → [quit cue] → IDLE
+```
+
+종료 키워드: `"슬립 오토"`, `"sleep otto"` — STT 결과 문자열 매칭으로 LLM 호출 없이 즉시 처리.
+
+### 효과음 cue 시스템
+
+```
+cues/otto_enter.mp3  # Otto enter.mp3에서 0~0.905s 추출 (ffmpeg atrim+afade)
+cues/otto_quit.mp3   # Otto quit.mp3에서 ch1 2.905~6.538s 추출 (ffprobe 챕터 기준)
+```
+
+**재생 순서 (직렬화):**
 ```python
-wake_word_detector.pause()
-voice_client.play(source)
-while voice_client.is_playing():
-    await asyncio.sleep(0.1)
-wake_word_detector.resume()
+await play_cue(CUE_ENTER)           # cue 완료 후
+asyncio.create_task(_capture(...))  # 캡처 시작 (동시 아님)
 ```
+cue와 캡처를 동시에 `create_task`로 시작하면 cue 재생 중 tail 타임아웃이 소모된다.
 
-**필러 발화:**
+### 필러 발화 (`play_filler()`)
 
-툴 호출이 예상될 때 미리 생성된 MP3를 재생한다:
+구현 완료, 호출 위치 미연결. Phase 6 MCP 툴 연동 시 연결 예정.
 
 ```python
 FILLER_MAP = {
@@ -730,23 +676,30 @@ FILLER_MAP = {
     "confirming": "fillers/hwagin_jung.mp3",
     "default": "fillers/jamsiman.mp3",
 }
-
-async def play_filler(voice_client, filler_key: str = "default"):
-    path = FILLER_MAP.get(filler_key, FILLER_MAP["default"])
-    source = discord.FFmpegPCMAudio(path)
-    voice_client.play(source)
-    while voice_client.is_playing():
-        await asyncio.sleep(0.05)
 ```
 
-필러 MP3는 ElevenLabs로 한 번 생성해서 파일로 저장해 둔다. 이후 API 호출 없이 재사용.
+`fillers/` 폴더 현재 비어있음 → `uv run tools/generate_tts_samples.py` 실행 필요.
 
-### 품질 검증
+### 확정 설정값
 
-- [ ] Wake word → 발화 → 봇이 음성으로 답한다
-- [ ] 봇이 말하는 중에 wake word를 말해도 재트리거되지 않는다
-- [ ] 봇이 말을 끝내면 wake word 감지가 재개된다
-- [ ] 응답이 끊기거나 부자연스럽게 잘리지 않는다
+```yaml
+tts:
+  provider: "elevenlabs"
+  model: "eleven_flash_v2_5"
+  chunk_size: 1024
+
+vad:
+  tail_ms: 1500   # 첫 턴. 이후 턴은 bot.py에서 3000ms로 동적 전환
+```
+
+### 품질 검증 결과
+
+- [x] `speak_local()`로 로컬 스피커 TTS 출력 확인
+- [x] TTS 첫음절 0.72s (스트리밍 구현 후 실측)
+- [x] quit cue 무음 버그 수정 (챕터 메타데이터 기반 재추출)
+- [ ] Discord 음성 채널 E2E 검증 미완료 (GPU 이식 + 마이크 환경 필요)
+- [ ] 에코 방지 실제 확인 미완료
+- [ ] 세션 모드 전체 테스트 미완료
 
 ---
 
@@ -814,6 +767,86 @@ mcp_servers:
 - [ ] 툴 호출 전 필러 발화가 먼저 재생된다
 - [ ] 툴 호출이 실패하면 봇이 에러를 음성으로 알린다 ("캘린더 연결에 문제가 생겼어요")
 - [ ] 툴 호출 결과가 JSONL 로그에 기록된다
+
+---
+
+## Phase 6.5 — 차량 데이터 (신규)
+
+> **설계 완료 (exhibition/roadmap.md). 미구현.**
+
+### 목표
+
+차량 상태(연료, 주행거리, 위치)를 조회해 음성으로 답한다. mock이 기본 경로, Bluelink 실연동은 best-effort.
+
+### core/vehicle.py
+
+```python
+from typing import Protocol
+
+class VehicleBackend(Protocol):
+    async def get_status(self) -> dict:
+        """{"fuel_pct": 42, "range_km": 320, "location": "연세대학교 인근", "odometer_km": 38200}"""
+        ...
+
+class MockVehicle:
+    """config.yaml에서 값 주입. 데모 결정성 확보."""
+    def __init__(self, cfg: dict):
+        self._data = cfg.get("mock_vehicle", {})
+
+    async def get_status(self) -> dict:
+        return self._data
+
+class BluelinkVehicle:
+    """공식 Hyundai Developers Portal OAuth 2.0 경로."""
+    # docs/hyundai-api-survey.md 참조
+    # 가용 API: status_dte(잔여 주행거리), 운행정보, 주행거리, 차량상태
+    # 비공식 라이브러리(hyundai_kia_connect_api)는 한국 Region 미지원(Issue #701)
+    # → 공식 포털 REST API 직접 호출
+```
+
+### config.yaml 추가
+
+```yaml
+active_profile: personal   # --profile 인자로 덮어쓰기
+
+profiles:
+  personal:
+    vehicle_backend: "bluelink"
+  exhibition:
+    vehicle_backend: "mock"
+
+mock_vehicle:
+  fuel_pct: 42
+  range_km: 320
+  location: "연세대학교 인근"
+  odometer_km: 38200
+```
+
+### 지도 API (카카오맵 + Tmap)
+
+GPS 좌표 → 자연어 주소 변환, 주변 주유소 검색에 사용. docs/map-api-survey.md 참조.
+
+```python
+# 역지오코딩: GPS → 주소
+GET https://dapi.kakao.com/v2/local/geo/coord2address.json
+  headers: {"Authorization": f"KakaoAK {REST_API_KEY}"}
+  params: {"x": lon, "y": lat}
+
+# 주변 주유소 검색
+GET https://dapi.kakao.com/v2/local/search/category.json
+  params: {"category_group_code": "OL7", "x": lon, "y": lat, "radius": 5000}
+```
+
+### 오케스트레이터 연동
+
+`get_vehicle_status`를 Claude 툴로 등록. 인텐트 분류기에 `vehicle.query` 추가:
+키워드: `기름`, `연료`, `주유`, `위치`, `어디`, `주행거리`, `킬로`.
+
+### 품질 검증 (목표)
+
+- [ ] "기름 얼마나 남았어?" → mock: "현재 연료 42%, 약 320km 주행 가능"
+- [ ] exhibition 프로파일에서 mock 응답이 config 값과 일치
+- [ ] personal 프로파일에서 Bluelink 실데이터 조회 (best-effort)
 
 ---
 
