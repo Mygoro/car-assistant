@@ -29,6 +29,13 @@ CPU에서 STT 11~13s → GPU 이식 시 1~2s 예상. 이식 없이는 실사용 
 - Phase 5: Wake word → 발화 → Discord 음성 채널 TTS 응답 (에코 방지, 세션 모드, cue 동작)
 - E2E 검증 통과 후 Phase 6 진입.
 
+**Phase 4+5 E2E 검증 — 완료 (2026-05-27 21:46~22:14)**
+- "크랭크 오토" wake word 감지 성공 (score 0.887~1.000)
+- LLM 응답 + Discord 텍스트 채널 게시 확인
+- 세션 모드: wake → 연속 대화 → "슬립 오토" → IDLE 복귀 확인
+- 에코 방지 동작 확인
+- 실측 발화 끝→봇 발화 시작: 26s (CPU 기준, GPU 이식 후 5~6s 목표)
+
 **다음 작업: Phase 6**
 `docs/implementation-manual.md` Phase 6 섹션 참고.
 우선순위: Calendar read → Notion read → Phase 6.5 mock vehicle provider.

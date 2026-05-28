@@ -16,6 +16,7 @@
 
 1. `docs/implementation-manual.md` — 전체 Phase 구조 (Phase 0~8) 및 구현 지침
 2. `docs/project-archive.md` — 의사결정 이력과 현재까지의 진행 상태
+3. `C:\Users\win10\Second Brain\Documentations(Claude)\daily\` — 가장 최근 날짜의 car-assistant 로그 파일 (미해결 항목, 검증 체크리스트 확인)
 
 ---
 
