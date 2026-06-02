@@ -30,10 +30,14 @@
   - Phase 4 — LLM 텍스트 응답 (3-tier 인텐트, Orchestrator, dual-response JSON, voice-first 스트리밍)
   - Phase 5 — ElevenLabs TTS 스트리밍 (`_StreamingPCMAudio`), Discord 음성 송출, 세션 모드, 효과음 cue
   - 전시 로드맵 설계 (2026-06-02 전시 + 2026-06-09 문서 제출)
-- **다음 (세션 시작 시 반드시)**
-  1. **데스크탑 이식** — `git clone` → `uv sync` → `.env` → config.yaml `device: cuda` / `compute_type: int8_float16` → `uv run bot.py` → 동작 확인
-  2. **Phase 4+5 E2E 검증** — GPU 이식 후 실제 마이크로 wake word → STT → LLM → TTS 전 구간 검증 (현재 CPU에서 미검증)
-  3. **Phase 6** — MCP 툴 통합 (Calendar read, Notion read)
+- **완료 (이어서)**
+  - 데스크탑 GPU 이식 (2026-06-03, RTX 5070 Ti). `core/cuda_setup.py`로 Blackwell DLL 문제 해결. STT 0.75s.
+  - Phase 4+5 E2E — GPU 1턴 검증 통과 (발화끝→첫소리 ~5.2s)
+  - TTS 지연 최적화 — ④ optimize_streaming_latency/ffmpeg + ⑥ WebSocket overlap
+- **다음 (세션 시작 시)**
+  1. **슬립 오토 즉시 종료 버그** — bot.py:289-293, 1줄 수정안 확보. 사용자 테스트 후 적용.
+  2. **warm/overlap 재측정** — 캐시 hit 연속 턴 + WS overlap 적용 후 발화끝→첫소리 재측정.
+  3. **Phase 6** — MCP 툴 통합 (Calendar read, Notion read). 방식 미정(직접 API 툴 vs MCP stdio vs 차량 mock).
 
 ---
 
