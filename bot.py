@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from core.audio_sink import CarAudioSink
 from core.orchestrator import Orchestrator
 from core.stt import STTEngine
-from core.tts import ElevenLabsTTS, speak, play_cue
+from core.tts import ElevenLabsTTS, speak, speak_streaming, play_cue
 
 CUE_ENTER = "cues/otto_enter.mp3"   # 웨이크 + 다음 턴 리슨 시작 직전
 CUE_QUIT  = "cues/otto_quit.mp3"    # 세션 종료 즉시 (이유 무관)
@@ -327,19 +327,37 @@ async def _run_llm(transcript: str, t_stt_start: float | None = None):
     ch_id = os.environ.get("DISCORD_TEXT_CHANNEL_ID")
     ch = bot.get_channel(int(ch_id)) if ch_id else None
     tts_task: asyncio.Task | None = None
+    # voice 토큰을 speak_streaming(WS TTS)으로 흘려보내는 브릿지 큐
+    voice_q: asyncio.Queue[str | None] = asyncio.Queue()
+    first_voice = True
     try:
         t_llm_start = time.monotonic()
 
-        async for stage, content in orchestrator.run_voice_first(transcript):
-            if stage == "voice":
-                log.info("[TIMING] 🤖 LLM→voice_response: %.2fs", time.monotonic() - t_llm_start)
-                if content and voice_client and voice_client.is_connected():
-                    # voice_response 완성 즉시 TTS 시작 — text_response 생성과 병렬 실행
-                    tts_task = asyncio.create_task(
-                        speak(voice_client, tts, content, wake_detector=wake_detector)
-                    )
-                elif content:
-                    log.warning("voice_client not connected — TTS skip")
+        async def _voice_aiter():
+            while True:
+                item = await voice_q.get()
+                if item is None:
+                    return
+                yield item
+
+        # ⑥ Overlap: voice_response를 토큰 단위로 받아 생성되는 즉시 WS TTS로 송출.
+        async for stage, content in orchestrator.run_voice_streaming(transcript):
+            if stage == "voice_chunk":
+                if first_voice:
+                    first_voice = False
+                    log.info("[TIMING] 🤖 LLM→voice 첫 토큰: %.2fs", time.monotonic() - t_llm_start)
+                    if voice_client and voice_client.is_connected():
+                        # 첫 토큰 즉시 TTS 시작 — 나머지 voice·text 생성과 병렬(overlap)
+                        tts_task = asyncio.create_task(
+                            speak_streaming(voice_client, tts, _voice_aiter(), wake_detector=wake_detector)
+                        )
+                    else:
+                        log.warning("voice_client not connected — TTS skip")
+                await voice_q.put(content)
+
+            elif stage == "voice_end":
+                log.info("[TIMING] 🤖 LLM→voice 완성: %.2fs", time.monotonic() - t_llm_start)
+                await voice_q.put(None)  # WS EOS 신호
 
             elif stage == "text":
                 log.info("[TIMING] 🤖 LLM→text_response: %.2fs", time.monotonic() - t_llm_start)
