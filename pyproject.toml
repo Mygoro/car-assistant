@@ -17,6 +17,9 @@ dependencies = [
     "ulid-py>=1.1.0",
     "onnx>=1.21.0",
     "sounddevice>=0.5.5",
+    "mcp>=1.27.2",
+    "google-auth-oauthlib>=1.4.0",
+    "google-api-python-client>=2.197.0",
 ]
 
 [dependency-groups]

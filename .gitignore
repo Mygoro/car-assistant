@@ -8,3 +8,5 @@ silero_vad.onnx
 wake_word/*.ppn
 otto_events.log
 .obsidian/workspace.json
+core/native_tools/google_credentials.json
+core/native_tools/calendar_token.json

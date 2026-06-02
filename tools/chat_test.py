@@ -78,6 +78,27 @@ async def _stream_turn(orch: Orchestrator, transcript: str, tts_client: ElevenLa
             await speak_local(tts_client, voice)
 
 
+async def _tool_turn(orch: Orchestrator, transcript: str, tts_client: ElevenLabsTTS | None = None):
+    """run_voice_first() 경로로 tool_use 포함 전체 파이프라인 테스트."""
+    intent = classify_intent(transcript)
+    route = cfg.get("intent_routing", {}).get(intent) or cfg.get("intent_routing", {}).get("default", "?")
+    print(f"{GREY}[intent: {intent} -> {route}]{RESET}")
+
+    voice = ""
+    text = ""
+    async for stage, content in orch.run_voice_first(transcript):
+        if stage == "filler":
+            print(f"{YELLOW}[filler] 툴 호출 중... ({content}){RESET}")
+        elif stage == "voice":
+            voice = content
+        elif stage == "text":
+            text = content
+
+    _print_turn(intent, route, voice, text)
+    if tts_client and voice:
+        await speak_local(tts_client, voice)
+
+
 async def _full_turn(orch: Orchestrator, transcript: str, tts_client: ElevenLabsTTS | None = None):
     intent = classify_intent(transcript)
     route = cfg.get("intent_routing", {}).get(intent) or cfg.get("intent_routing", {}).get("default", "?")
@@ -108,40 +129,51 @@ async def main(stream: bool, tts_enabled: bool):
         print(f"{GREY}[TTS 활성화 — ElevenLabs {cfg['tts']['model']}]{RESET}\n")
 
     orch = Orchestrator(cfg=cfg, anthropic_api_key=api_key)
+    await orch.start()
     _print_header()
+    print(f"{GREY}[등록된 툴 {len(orch._tools)}개: {', '.join(orch._tools.keys())}]{RESET}\n")
 
-    while True:
-        try:
-            transcript = input(f"{CYAN}🎤 > {RESET}").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n종료합니다.")
-            break
+    try:
+        while True:
+            try:
+                transcript = input(f"{CYAN}🎤 > {RESET}").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n종료합니다.")
+                break
 
-        if not transcript:
-            continue
-        if transcript in ("!quit", "!exit", "q"):
-            print("종료합니다.")
-            break
-        if transcript == "!reset":
-            orch._history.clear()
-            print(f"{GREY}[히스토리 초기화됨]{RESET}\n")
-            continue
-        if transcript == "!history":
-            if not orch._history:
-                print(f"{GREY}[히스토리 없음]{RESET}\n")
-            else:
-                for i, m in enumerate(orch._history):
-                    print(f"{GREY}[{i}] {m.role}: {m.content[:60]}...{RESET}")
+            if not transcript:
+                continue
+            if transcript in ("!quit", "!exit", "q"):
+                print("종료합니다.")
+                break
+            if transcript == "!reset":
+                orch._history.clear()
+                print(f"{GREY}[히스토리 초기화됨]{RESET}\n")
+                continue
+            if transcript == "!history":
+                if not orch._history:
+                    print(f"{GREY}[히스토리 없음]{RESET}\n")
+                else:
+                    for i, m in enumerate(orch._history):
+                        content_preview = str(m.content)[:60]
+                        print(f"{GREY}[{i}] {m.role}: {content_preview}...{RESET}")
+                    print()
+                continue
+            if transcript == "!tools":
+                for name, handle in orch._tools.items():
+                    print(f"{GREY}  [{handle.kind}] {name}{RESET}")
                 print()
-            continue
+                continue
 
-        try:
-            if stream:
-                await _stream_turn(orch, transcript, tts_client)
-            else:
-                await _full_turn(orch, transcript, tts_client)
-        except Exception as e:
-            print(f"⚠️  오류: {e}\n")
+            try:
+                if stream:
+                    await _stream_turn(orch, transcript, tts_client)
+                else:
+                    await _tool_turn(orch, transcript, tts_client)
+            except Exception as e:
+                print(f"⚠️  오류: {e}\n")
+    finally:
+        await orch.aclose()
 
 
 if __name__ == "__main__":

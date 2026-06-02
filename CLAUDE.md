@@ -29,11 +29,15 @@
   - Phase 3 — STT 통합 (Silero VAD 8kHz + faster-whisper large-v3, capture_queue 분리, MIN_SPEECH 가드)
   - Phase 4 — LLM 텍스트 응답 (3-tier 인텐트, Orchestrator, dual-response JSON, voice-first 스트리밍)
   - Phase 5 — ElevenLabs TTS 스트리밍 (`_StreamingPCMAudio`), Discord 음성 송출, 세션 모드, 효과음 cue
-  - 전시 로드맵 설계 (2026-06-02 전시 + 2026-06-09 문서 제출)
+  - 전시 로드맵 설계 (2026-06-09 전시)
+- **진행 중**
+  - Phase 6 — MCP/native 툴 통합 (2026-06-02): **코드 작성 완료, 런타임 연결 미검증**
+    - Orchestrator tool-use 루프 (ToolHandle 레지스트리, AsyncExitStack 기반 MCP 생명주기)
+    - Notion stdio MCP + native 툴 3종 (Calendar 실구현 / Hyundai Bluelink stub / KakaoMap)
 - **다음 (세션 시작 시 반드시)**
   1. **데스크탑 이식** — `git clone` → `uv sync` → `.env` → config.yaml `device: cuda` / `compute_type: int8_float16` → `uv run bot.py` → 동작 확인
-  2. **Phase 4+5 E2E 검증** — GPU 이식 후 실제 마이크로 wake word → STT → LLM → TTS 전 구간 검증 (현재 CPU에서 미검증)
-  3. **Phase 6** — MCP 툴 통합 (Calendar read, Notion read)
+  2. **Phase 6 런타임 검증** — `.env`에 `NOTION_API_KEY` 등록 → `uv run tools/chat_test.py` → `!tools` 확인 → Calendar OAuth 실행 → "내일 일정 뭐야?" / "기름 얼마 남았어?" 테스트 (`docs/project-archive.md` 다음 세션 시작 지점 체크리스트 참조)
+  3. **Phase 4+5 E2E 검증** — GPU 이식 후 실제 마이크로 wake word → STT → LLM → TTS 전 구간 검증 (현재 CPU에서 미검증)
 
 ---
 

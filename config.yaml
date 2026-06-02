@@ -32,3 +32,13 @@ tts:
   chunk_size: 1024
 
 filler_threshold_ms: 800
+
+mcp_servers:
+  notion:
+    command: ["npx", "-y", "@notionhq/notion-mcp-server"]
+    env:
+      NOTION_TOKEN: "${NOTION_API_KEY}"
+
+tool_use:
+  max_iterations: 5
+  tool_timeout_s: 15

@@ -170,6 +170,7 @@ capture_queue: asyncio.Queue = asyncio.Queue()
 @bot.event
 async def on_ready():
     print(f"Bot ready: {bot.user}")
+    await orchestrator.start()
     voice_watchdog.start()
     asyncio.create_task(audio_processor())
 
@@ -334,7 +335,9 @@ async def _run_llm(transcript: str, t_stt_start: float | None = None):
             if stage == "voice":
                 log.info("[TIMING] 🤖 LLM→voice_response: %.2fs", time.monotonic() - t_llm_start)
                 if content and voice_client and voice_client.is_connected():
-                    # voice_response 완성 즉시 TTS 시작 — text_response 생성과 병렬 실행
+                    # filler가 재생 중이면 완료 대기 후 TTS 시작
+                    if tts_task and not tts_task.done():
+                        await tts_task
                     tts_task = asyncio.create_task(
                         speak(voice_client, tts, content, wake_detector=wake_detector)
                     )
@@ -345,6 +348,15 @@ async def _run_llm(transcript: str, t_stt_start: float | None = None):
                 log.info("[TIMING] 🤖 LLM→text_response: %.2fs", time.monotonic() - t_llm_start)
                 if ch and content:
                     await ch.send(f"🤖 {content}")
+
+            elif stage == "filler":
+                log.info("[TOOL] 툴 호출 전 filler 재생: %s", content)
+                if voice_client and voice_client.is_connected():
+                    if not tts_task or tts_task.done():
+                        from core.tts import play_filler
+                        tts_task = asyncio.create_task(
+                            play_filler(voice_client, content)
+                        )
 
         # TTS 완료 대기 (에코 방지: TTS 끝나야 다음 캡처 재개)
         if tts_task:
@@ -469,4 +481,10 @@ async def voice_watchdog_error(error):
     print(f"Voice watchdog unhandled error: {error}")
 
 
-bot.run(os.environ["DISCORD_BOT_TOKEN"])
+async def _main():
+    try:
+        await bot.start(os.environ["DISCORD_BOT_TOKEN"])
+    finally:
+        await orchestrator.aclose()
+
+asyncio.run(_main())

@@ -1,11 +1,11 @@
 from dataclasses import dataclass, field
-from typing import Protocol, AsyncIterator, runtime_checkable
+from typing import Protocol, AsyncIterator, Union, runtime_checkable
 
 
 @dataclass
 class Message:
     role: str   # "user" | "assistant" | "system"
-    content: str
+    content: Union[str, list[dict]]  # str: 일반 텍스트, list[dict]: tool_use/tool_result 블록
 
 
 @dataclass

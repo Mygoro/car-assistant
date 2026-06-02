@@ -12,13 +12,27 @@ Byunghun Kwon · 2022195171
 - **Phase 3 완료** — STT 통합 (Silero VAD 8kHz, faster-whisper large-v3, capture_queue 분리, MIN_SPEECH 가드)
 - **Phase 4 완료** — LLM 텍스트 응답 파이프라인 (providers 추상화, Orchestrator, dual-response JSON)
 - **Phase 5 완료** — ElevenLabs TTS + Discord 음성 송출, 세션 모드, 효과음, voice-first 스트리밍
-- **다음 작업**: Phase 6 — MCP 툴 통합 (Calendar/Notion 읽기) + Phase 6.5 차량 데이터 mock
+- **Phase 6 진행 중** — MCP/native 툴 통합 코드 작성 완료 (2026-06-02), **런타임 연결 미검증**
+- **다음 작업**: 데스크탑 GPU 이식 → Phase 6 런타임 검증 (NOTION_API_KEY 등록, Calendar OAuth, 툴 호출 E2E)
 - **개발 환경**: CPU-only 노트북 (GPU 이식 미완료 — 데스크탑 이식 필요)
-- **전시 일정**: 2026-06-02 (D-5)
+- **전시 일정**: 2026-06-09
 
 ---
 
-### ⚡ 다음 세션 시작 지점 (2026-05-28 이후)
+### ⚡ 다음 세션 시작 지점 (2026-06-02 이후)
+
+**최우선 — Phase 6 런타임 연결 검증 (코드는 완성, 외부 서비스 연결은 0건)**
+
+1. `.env`에 `NOTION_API_KEY` 등록 → `uv run tools/chat_test.py` → `!tools` 커맨드로 등록 툴 확인 → `otto_events.log`에서 "MCP 'notion' 연결 완료" 확인
+2. `google_credentials.json`을 `core/native_tools/`에 복사 (lecture_notes automation 폴더에서 재사용 가능)
+3. Calendar OAuth 실행: `get_calendar_events()` 첫 호출 → 브라우저 인증 → `core/native_tools/calendar_token.json` 저장 확인
+4. "내일 일정 뭐야?" 발화 테스트 → filler 재생 + Calendar 응답 확인
+5. "기름 얼마 남았어?" 발화 테스트 → vehicle stub 응답 확인
+6. (선택) `KAKAO_REST_API_KEY` 발급·등록 — 미등록 시 stub 응답
+
+---
+
+### 이전 시작 지점 (2026-05-28 이후) — 처리됨
 
 **최우선 — GPU 이식 (밖에서는 불가, 데스크탑 복귀 시)**
 `git clone` → `uv sync` → `.env` 복사 → `config.yaml` (`device: cuda`, `compute_type: int8_float16`) → `uv run bot.py` → "크랭크 오토" 테스트.
@@ -68,6 +82,32 @@ Discord mobile (재생)
 - **wake word**: "크랭크 오토" (openwakeword 커스텀, "hey otto" 오탐 문제로 피벗)
 
 ### 날짜별 작업 내역
+
+#### 2026-06-02 — Phase 6 MCP/native 툴 통합 구현 (런타임 미검증)
+
+Opus 4.8 설계 스펙(`Second Brain\plans\mcp-toasty-melody2.md`) 기반으로 Phase 6 코드 구조를 완성했다.
+**단, 외부 서비스에 실제로 연결된 것은 없으며 import/syntax 수준 검증만 완료된 상태.**
+
+| 구성 요소 | 내용 |
+|----------|------|
+| `core/orchestrator.py` | 전면 재작성 — `ToolHandle` 레지스트리로 MCP/native 툴 통합, `AsyncExitStack` 기반 MCP 생명주기 (`start()`/`aclose()`), tool-use 루프(`_tool_voice_first`, non-streaming)와 trivial 스트리밍 경로 분리 |
+| `core/native_tools/calendar.py` | 신규 — Google Calendar read 실구현 (lecture_notes의 `google_credentials.json` 재사용, 첫 호출 시 OAuth 브라우저 인증 → `calendar_token.json` 저장) |
+| `core/native_tools/vehicle.py` | 신규 — Hyundai Bluelink stub (mock 데이터: 연료/주행거리/주차위치) |
+| `core/native_tools/kakao.py` | 신규 — KakaoMap 장소 검색 + 역지오코딩 (`KAKAO_REST_API_KEY` 없으면 stub) |
+| `core/providers/anthropic.py` | `complete()` non-streaming 메서드 추가 (tool-use 루프용) |
+| `core/providers/base.py` | `Message.content`: `str` → `Union[str, list[dict]]` (tool_use/tool_result 블록 지원) |
+| `config.yaml` | `mcp_servers.notion` (stdio, npx), `tool_use.max_iterations=5`, `tool_timeout_s=15` |
+| `bot.py` | `orchestrator.start()`/`aclose()` 연동, filler 단계 처리, `asyncio.run(_main())` 클린 셧다운 |
+| `tools/chat_test.py` | `_tool_turn()` (tool-use 경로 테스트), `!tools` 커맨드 |
+| `.env.example` | `NOTION_API_KEY`, `KAKAO_REST_API_KEY`, `HYUNDAI_CLIENT_ID/SECRET` 항목 추가 |
+| `pyproject.toml` | `mcp>=1.27.2`, `google-auth-oauthlib`, `google-api-python-client` 추가 |
+
+**주요 결정:**
+- **ToolHandle 통합 레지스트리** — MCP 툴(Notion)과 native 툴(Calendar/Hyundai/Kakao)을 단일 dataclass로 통합. tool-use 루프는 kind 구분 없이 `_call_tool_safe()` 하나로 호출.
+- **tool-use 경로는 non-streaming** — streaming 중에는 stop_reason을 알 수 없으므로 `provider.complete()`로 전체 응답 수신. trivial 인텐트/툴 없음 경로는 기존 voice-first 스트리밍 유지.
+- **Brave Search P1 이연, vehicle/kakao 실연동은 키 확보 후로 이연** — interface-first stub으로 인터페이스만 확정.
+
+상세 내역: `Documentations(Claude)/daily/2026-06-02-car-assistant.md`
 
 #### 2026-05-28 — Phase 5 세련화 / 비정상 종료로 대화 유실 (git으로 복원)
 
