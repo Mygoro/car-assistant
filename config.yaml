@@ -18,7 +18,8 @@ llm:
   default_provider: "anthropic"
   default_model: "claude-sonnet-4-6"
   max_tokens: 1000
-  history_turns: 10
+  # D) uncached 히스토리 꼬리 축소로 ITPM 부담 완화 (10→6). history_turns*2개 메시지 유지.
+  history_turns: 6
 
 intent_routing:
   "default": "anthropic/claude-sonnet-4-6"
@@ -38,7 +39,19 @@ mcp_servers:
     command: ["npx", "-y", "@notionhq/notion-mcp-server"]
     env:
       NOTION_TOKEN: "${NOTION_API_KEY}"
+    # B) Notion API 스키마 22개는 매 요청 토큰을 크게 잡아먹는다.
+    # Otto가 실제 쓰는 조회 툴만 등록 → ITPM/캐시 write 부담 감소.
+    # (전체 툴이 필요하면 이 목록을 비우거나 삭제하면 됨)
+    allowed_tools:
+      - API-post-search
+      - API-query-data-source
+      - API-retrieve-a-data-source
+      - API-get-block-children
+      - API-retrieve-a-page
 
 tool_use:
   max_iterations: 5
   tool_timeout_s: 15
+  # C) tool_result 길이 캡. 강의 본문(100블록) 같은 거대 결과가 매 루프 iteration·히스토리에
+  # uncached로 재전송되며 ITPM을 터뜨리는 것을 차단. 요약엔 앞부분이면 충분.
+  max_result_chars: 6000

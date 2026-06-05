@@ -183,6 +183,7 @@ class Orchestrator:
         tool_cfg = cfg.get("tool_use", {})
         self._max_iterations = tool_cfg.get("max_iterations", 5)
         self._tool_timeout_s = tool_cfg.get("tool_timeout_s", 15)
+        self._max_result_chars = tool_cfg.get("max_result_chars", 6000)
 
     # ------------------------------------------------------------------
     # 시작 / 종료
@@ -226,7 +227,12 @@ class Orchestrator:
                 await session.initialize()
                 tools_result = await session.list_tools()
                 self._sessions[server_name] = session
+                # B) allowed_tools가 있으면 그 목록만 등록(ITPM/토큰 절감). 없으면 전체.
+                allowed = set(scfg.get("allowed_tools") or [])
+                registered = 0
                 for tool in tools_result.tools:
+                    if allowed and tool.name not in allowed:
+                        continue
                     self._tools[tool.name] = ToolHandle(
                         name=tool.name,
                         schema={
@@ -237,7 +243,10 @@ class Orchestrator:
                         kind="mcp",
                         mcp_server=server_name,
                     )
-                log.info("MCP '%s' 연결 완료, 툴 %d개", server_name, len(tools_result.tools))
+                    registered += 1
+                log.info("MCP '%s' 연결 완료, 툴 %d/%d개 등록%s",
+                         server_name, registered, len(tools_result.tools),
+                         " (화이트리스트)" if allowed else "")
             except Exception as e:
                 log.error("MCP '%s' 연결 실패: %s — 건너뜀", server_name, e)
 
@@ -321,17 +330,29 @@ class Orchestrator:
                     timeout=self._tool_timeout_s,
                 )
                 texts = [c.text for c in result.content if hasattr(c, "text")]
-                return "\n".join(texts) if texts else "[Tool returned no text]"
+                out = "\n".join(texts) if texts else "[Tool returned no text]"
             else:
-                return await asyncio.wait_for(
+                out = await asyncio.wait_for(
                     handle.native_fn(arguments),
                     timeout=self._tool_timeout_s,
                 )
+            return self._truncate_result(name, out)
         except asyncio.TimeoutError:
             return f"[Tool '{name}' timed out after {self._tool_timeout_s}s]"
         except Exception as e:
             log.error("Tool '%s' error: %s", name, e)
             return f"[Tool '{name}' error: {e}]"
+
+    def _truncate_result(self, name: str, out) -> str:
+        """C) 거대 tool_result를 캡. 매 루프 iteration·히스토리에 uncached로 재전송되며
+        ITPM을 터뜨리는 것을 막는다. 모델은 앞부분만으로 요약 가능."""
+        s = "" if out is None else str(out)
+        if len(s) <= self._max_result_chars:
+            return s
+        log.info("[TOOL] '%s' 결과 %d자 → %d자로 잘림", name, len(s), self._max_result_chars)
+        return s[:self._max_result_chars] + (
+            f"\n…[결과 잘림: 전체 {len(s)}자 중 앞 {self._max_result_chars}자만 전달]"
+        )
 
     def _all_schemas(self) -> list[dict]:
         return [t.schema for t in self._tools.values()]
