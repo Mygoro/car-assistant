@@ -700,7 +700,38 @@ vad:
 - [x] Discord 음성 채널 E2E 검증 완료 (2026-05-27 실 테스트)
 - [x] 에코 방지 실제 동작 확인 (재트리거 없음)
 - [x] 세션 모드 완료: wake → 연속 대화 → "슬립 오토" → IDLE 복귀
-- [ ] GPU 환경 재검증 (CPU 기준 발화→응답 26s, GPU 후 5~6s 목표)
+- [x] GPU 환경 재검증 (2026-06-03, RTX 5070 Ti) — STT 0.75s, 발화끝→첫소리 ~5.2s (CPU ~26s)
+
+### GPU 이식 (Windows / Blackwell) — cuda_setup
+
+faster-whisper(CTranslate2)는 Windows에서 cublas64_12.dll / cudnn64_9.dll / cudart64_12.dll을
+런타임 LoadLibrary로 찾는데 시스템 PATH에 없어 추론이 실패한다. `core/cuda_setup.py`가
+nvidia pip 패키지(`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, `nvidia-cuda-runtime-cu12`)의
+bin 경로를 PATH + `os.add_dll_directory`에 등록한다. `stt.py`가 `faster_whisper` import 전에
+`cuda_setup.setup()`을 호출한다(Windows 아니거나 미설치 시 no-op).
+
+신규 기기 셋업 시 1회 자동 조달: `silero_vad.onnx`(vad.py 자동 다운로드),
+openwakeword base 모델(`uv run python -c "import openwakeword.utils as u; u.download_models()"`).
+
+### TTS 지연 최적화 (2026-06-03)
+
+**④ 첫 바이트 단축:**
+- ElevenLabs stream URL에 `?optimize_streaming_latency=3`
+- ffmpeg: `-f mp3`(포맷 탐지 probe 생략) + `-analyzeduration 0` + `-probesize 32` + `-fflags nobuffer`
+- `speak()`의 ffmpeg→PCM→Discord 브릿지를 `_play_mp3_stream` 헬퍼로 추출(HTTP/WS 공용)
+
+**⑥ WebSocket overlap (LLM↔TTS 병렬):**
+- `ElevenLabsTTS.stream_ws(text_aiter)` — stream-input WS. 텍스트 청크를 받는 즉시 송신하고
+  생성되는 MP3를 yield. `speak_streaming()`이 `_play_mp3_stream`으로 재생.
+- `Orchestrator.run_voice_streaming()` — 스트리밍 중 voice_response 값을 부분 디코딩해 토큰
+  단위로 방출(`voice_chunk`/`voice_end`/`text`). `_find_value_end`(이스케이프 인지 닫는 따옴표
+  탐색) + `_decode_partial`(끝에서 잘라 파싱 가능한 최대 prefix).
+- `bot._run_llm` — asyncio.Queue로 voice 토큰을 `speak_streaming`에 흘림. 첫 voice 토큰 즉시
+  TTS 시작.
+- 한계: `chunk_length_schedule=[50]`(최소)이라 overlap 실이득은 50자 초과 응답에서 크다.
+  짧은 응답은 HTTP와 대체로 동등(회귀 없음).
+
+검증: `tests/test_voice_streaming.py`(파서 단위) + `tests/verify_tts_live.py`(라이브).
 
 ---
 

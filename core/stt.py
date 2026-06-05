@@ -2,6 +2,11 @@ import asyncio
 import logging
 
 import numpy as np
+
+from core import cuda_setup
+
+cuda_setup.setup()  # faster_whisper import 전에 Windows CUDA DLL 경로 등록
+
 from faster_whisper import WhisperModel
 
 log = logging.getLogger(__name__)

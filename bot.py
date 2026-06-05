@@ -72,6 +72,22 @@ tts = ElevenLabsTTS(
 )
 
 
+class TimingLog:
+    """E2E 타임 로그 누적기. 기존처럼 콘솔/otto_events.log에 [TIMING]으로 남기고,
+    턴 종료 시 Discord 채팅 채널에 통합 블록으로 한 번에 게시한다."""
+
+    def __init__(self):
+        self.lines: list[str] = []
+
+    def add(self, msg: str):
+        log.info("[TIMING] %s", msg)
+        self.lines.append(msg)
+
+    def render(self) -> str:
+        body = "\n".join(self.lines)
+        return f"⏱ **타임 로그**\n```\n{body}\n```"
+
+
 class BotState(enum.Enum):
     IDLE = "idle"
     LISTENING = "listening"
@@ -80,12 +96,8 @@ class BotState(enum.Enum):
 
 _state = BotState.IDLE
 
-# 세션 모드: wake word 1회로 열리고 명시적 종료 or 무응답까지 유지
+# 세션 모드: wake word 1회로 열리고 무응답(타임아웃)까지 유지
 _session_active: bool = False
-_SESSION_CLOSE_KEYWORDS = {
-    "슬립 오토", "sleep otto",   # 주 종료 명령어
-    "그만", "종료해", "닫아", "끝내", "오토 꺼", "세션 종료",  # 폴백
-}
 
 # 녹음 모드 상태 (학습 데이터 수집용)
 _recording = False
@@ -274,24 +286,21 @@ async def _capture_and_transcribe(first_turn: bool = True):
         if capture_buf:
             audio = np.concatenate(capture_buf)
             t_stt_start = time.monotonic()
-            log.info("[TIMING] 🎙 캡처 %.1fs — STT 시작", len(audio) / 16000)
+            timing = TimingLog()
+            timing.add(f"🎙 캡처 {len(audio) / 16000:.1f}s — STT 시작")
             _state = BotState.PROCESSING
             try:
                 transcript = await stt.transcribe(audio)
             except Exception:
                 log.exception("STT error")
                 transcript = ""
-            log.info("[TIMING] 📝 STT: %.2fs", time.monotonic() - t_stt_start)
+            timing.add(f"📝 STT: {time.monotonic() - t_stt_start:.2f}s")
             if transcript:
                 had_transcript = True
                 log.info("Transcript: %s", transcript)
                 await _post_transcript(transcript)
-                # 종료 키워드 확인
-                if any(kw in transcript for kw in _SESSION_CLOSE_KEYWORDS):
-                    _session_active = False
-                    log.info("Session close keyword detected")
                 # 세션 모드: TTS 완료까지 대기 (에코 방지)
-                await _run_llm(transcript, t_stt_start=t_stt_start)
+                await _run_llm(transcript, t_stt_start=t_stt_start, timing=timing)
             else:
                 log.info("STT returned empty transcript")
     finally:
@@ -306,7 +315,7 @@ async def _capture_and_transcribe(first_turn: bool = True):
             asyncio.create_task(_capture_and_transcribe(first_turn=False))
             log.info("Session continuing — listening for next utterance")
         else:
-            # 무응답 / 빈 transcript / 종료 키워드 → IDLE
+            # 무응답 / 빈 transcript → IDLE
             _session_active = False
             _state = BotState.IDLE
             if voice_client and voice_client.is_connected():
@@ -324,16 +333,21 @@ async def _post_transcript(transcript: str):
         await ch.send(f"🎤 {transcript}")
 
 
-async def _run_llm(transcript: str, t_stt_start: float | None = None):
+async def _run_llm(transcript: str, t_stt_start: float | None = None, timing: "TimingLog | None" = None):
     ch_id = os.environ.get("DISCORD_TEXT_CHANNEL_ID")
     ch = bot.get_channel(int(ch_id)) if ch_id else None
+    if timing is None:
+        timing = TimingLog()
     tts_task: asyncio.Task | None = None
     try:
         t_llm_start = time.monotonic()
 
+        # run_voice_first가 통합 라우터: trivial/툴없음 → voice-first(speak),
+        # 툴 필요 → non-streaming tool 루프(filler). voice_response는 길이가 짧게
+        # 강제되므로 토큰 overlap 실이득이 거의 없어 voice-first 경로로 단일화.
         async for stage, content in orchestrator.run_voice_first(transcript):
             if stage == "voice":
-                log.info("[TIMING] 🤖 LLM→voice_response: %.2fs", time.monotonic() - t_llm_start)
+                timing.add(f"🤖 LLM→voice_response: {time.monotonic() - t_llm_start:.2f}s")
                 if content and voice_client and voice_client.is_connected():
                     # filler가 재생 중이면 완료 대기 후 TTS 시작
                     if tts_task and not tts_task.done():
@@ -345,7 +359,7 @@ async def _run_llm(transcript: str, t_stt_start: float | None = None):
                     log.warning("voice_client not connected — TTS skip")
 
             elif stage == "text":
-                log.info("[TIMING] 🤖 LLM→text_response: %.2fs", time.monotonic() - t_llm_start)
+                timing.add(f"🤖 LLM→text_response: {time.monotonic() - t_llm_start:.2f}s")
                 if ch and content:
                     await ch.send(f"🤖 {content}")
 
@@ -361,10 +375,14 @@ async def _run_llm(transcript: str, t_stt_start: float | None = None):
         # TTS 완료 대기 (에코 방지: TTS 끝나야 다음 캡처 재개)
         if tts_task:
             await tts_task
-            log.info("[TIMING] 🔊 TTS+재생 완료: %.2fs", time.monotonic() - t_llm_start)
+            timing.add(f"🔊 TTS+재생 완료: {time.monotonic() - t_llm_start:.2f}s")
 
         if t_stt_start is not None:
-            log.info("[TIMING] ⏱ 총 (STT시작→음성종료): %.2fs", time.monotonic() - t_stt_start)
+            timing.add(f"⏱ 총 (STT시작→음성종료): {time.monotonic() - t_stt_start:.2f}s")
+
+        # E2E 타임 로그를 Discord 채팅에 통합 게시 (테스트용)
+        if ch:
+            await ch.send(timing.render())
 
     except Exception:
         log.exception("LLM error for transcript: %s", transcript)

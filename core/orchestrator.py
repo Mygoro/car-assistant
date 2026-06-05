@@ -24,6 +24,37 @@ _RESET_KEYWORDS = {"새로 시작해", "새로시작해", "리셋", "초기화",
 # voice_response 값이 완성된 시점을 스트림 중에 감지
 _VOICE_RE = re.compile(r'"voice_response"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
+# voice_response 값의 *시작* 위치(여는 따옴표 직후)를 찾는 패턴 — 부분 스트리밍용
+_VOICE_START_RE = re.compile(r'"voice_response"\s*:\s*"')
+
+
+def _find_value_end(raw: str) -> int:
+    """JSON 문자열 본문 raw에서 이스케이프되지 않은 닫는 따옴표 인덱스. 없으면 -1."""
+    i, n = 0, len(raw)
+    while i < n:
+        c = raw[i]
+        if c == "\\":
+            i += 2          # 이스케이프 시퀀스 건너뜀(끝의 외톨이 \는 자연히 -1)
+            continue
+        if c == '"':
+            return i
+        i += 1
+    return -1
+
+
+def _decode_partial(raw_value: str) -> str:
+    """JSON 문자열 본문(따옴표 제외, 끝이 미완성 이스케이프일 수 있음)을 디코딩.
+
+    끝에서부터 잘라가며 파싱 가능한 최대 prefix를 구한다(미완 \\u12 / 외톨이 \\ 처리).
+    """
+    s = raw_value
+    while s:
+        try:
+            return json.loads('"' + s + '"')
+        except json.JSONDecodeError:
+            s = s[:-1]
+    return ""
+
 
 # ---------------------------------------------------------------------------
 # ToolHandle — MCP와 native 툴을 하나의 인터페이스로 통합
@@ -342,6 +373,73 @@ class Orchestrator:
             yield "voice", validate_voice_length(voice_full)
 
         if voice_full or text:
+            self._push_history(Message("assistant", buffer))
+
+        yield "text", text
+
+    async def run_voice_streaming(self, transcript: str):
+        """⑥ Overlap 파이프라인 — voice_response를 토큰 단위로 흘려보낸다.
+
+        run_voice_first가 voice_response *완성* 후 한 번에 방출하는 것과 달리,
+        이 메서드는 생성되는 즉시 부분 텍스트를 yield해 WS TTS와 LLM을 겹친다.
+
+        Yields:
+            ('voice_chunk', str) — voice_response의 새로 디코딩된 조각 (0회 이상)
+            ('voice_end',   '')  — voice_response 문자열 종료(WS EOS 신호)
+            ('text',        str) — 전체 응답 완성 후 text_response (Discord 게시)
+        """
+        if any(kw in transcript for kw in _RESET_KEYWORDS):
+            self._history.clear()
+            log.info("Conversation history reset")
+            yield "voice_chunk", "대화 기록을 초기화했어요."
+            yield "voice_end", ""
+            yield "text", "(히스토리 초기화)"
+            return
+
+        intent = classify_intent(transcript)
+        provider = self._get_provider(intent)
+        log.info("Intent: %s | model: %s", intent, provider.model)
+        messages = self._build_messages(transcript)
+
+        buffer = ""
+        voice_start = -1       # voice 값 시작 인덱스(여는 따옴표 직후)
+        emitted = 0            # 이미 yield한 디코딩 문자 수
+        voice_ended = False
+
+        async for delta in provider.stream(messages, tools=[]):
+            if not delta.text:
+                continue
+            buffer += delta.text
+
+            if voice_start < 0:
+                m = _VOICE_START_RE.search(buffer)
+                if not m:
+                    continue
+                voice_start = m.end()
+
+            if voice_ended:
+                continue
+
+            raw = buffer[voice_start:]
+            end = _find_value_end(raw)
+            value_raw = raw if end < 0 else raw[:end]
+            decoded = _decode_partial(value_raw)
+            if len(decoded) > emitted:
+                yield "voice_chunk", decoded[emitted:]
+                emitted = len(decoded)
+            if end >= 0:
+                voice_ended = True
+                yield "voice_end", ""
+
+        # 스트림 종료 — voice를 한 번도 못 닫았으면(파싱 실패/포맷 이탈) 폴백
+        voice_full, text = parse_dual_response(buffer)
+        if not voice_ended:
+            if emitted == 0 and voice_full:
+                yield "voice_chunk", validate_voice_length(voice_full)
+            yield "voice_end", ""
+
+        if voice_full or text:
+            self._push_history(Message("user", transcript))
             self._push_history(Message("assistant", buffer))
 
         yield "text", text

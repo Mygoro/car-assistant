@@ -12,10 +12,14 @@ Byunghun Kwon · 2022195171
 - **Phase 3 완료** — STT 통합 (Silero VAD 8kHz, faster-whisper large-v3, capture_queue 분리, MIN_SPEECH 가드)
 - **Phase 4 완료** — LLM 텍스트 응답 파이프라인 (providers 추상화, Orchestrator, dual-response JSON)
 - **Phase 5 완료** — ElevenLabs TTS + Discord 음성 송출, 세션 모드, 효과음, voice-first 스트리밍
+- **GPU 이식 완료** (2026-06-03) — 데스크탑 RTX 5070 Ti. STT 11~13s → **0.75s** 실측. E2E 1턴 GPU 검증 통과.
+- **TTS 지연 최적화 완료** (2026-06-03) — optimize_streaming_latency + ffmpeg 버퍼 off + WebSocket overlap (코드 보존; bot은 voice-first 경로 사용)
+- **E2E 타임로그 + 슬립오토 제거 완료** (2026-06-05) — 타임로그 Discord 출력, 세션은 무응답 타임아웃으로만 종료(슬립오토 버그 동시 해소). warm 발화끝→첫소리 **~3.4s** 실측, 목표 충족.
+- **분기 통합 완료** (2026-06-05) — `feat/tts-latency-ws-overlap`(GPU+TTS)와 `master`(Phase 6)가 `1270302`에서 분기돼 있던 것을 master로 통합. **이후 master에서 작업.**
 - **Phase 6 진행 중** — MCP/native 툴 통합 코드 작성 완료 (2026-06-02), **런타임 연결 미검증**
-- **다음 작업**: 데스크탑 GPU 이식 → Phase 6 런타임 검증 (NOTION_API_KEY 등록, Calendar OAuth, 툴 호출 E2E)
-- **개발 환경**: CPU-only 노트북 (GPU 이식 미완료 — 데스크탑 이식 필요)
-- **전시 일정**: 2026-06-09
+- **다음 작업**: Phase 6 런타임 검증 (`uv sync` → NOTION_API_KEY/KAKAO_REST_API_KEY 등록 → Calendar OAuth → 툴 호출 E2E) + Phase 6.5 차량 데이터 mock
+- **개발 환경**: 데스크탑(NVIDIA RTX 5070 Ti) 이식 완료. 노트북은 CPU-only 개발용
+- **전시 일정**: **2026-06-09 전시**
 
 ---
 
@@ -34,11 +38,13 @@ Byunghun Kwon · 2022195171
 
 ### 이전 시작 지점 (2026-05-28 이후) — 처리됨
 
-**최우선 — GPU 이식 (밖에서는 불가, 데스크탑 복귀 시)**
-`git clone` → `uv sync` → `.env` 복사 → `config.yaml` (`device: cuda`, `compute_type: int8_float16`) → `uv run bot.py` → "크랭크 오토" 테스트.
-CPU에서 STT 11~13s → GPU 이식 시 1~2s 예상. 이식 없이는 실사용 불가.
+**GPU 이식 — 완료 (2026-06-03, 데스크탑 RTX 5070 Ti)**
+`git clone` → `uv sync` → `env`→`.env` → `config.yaml`(cuda/int8_float16) → `uv run bot.py`.
+이식 중 Blackwell(sm_120) DLL 문제 해결(아래 2026-06-03 항목 참조). STT warm **0.75s** 실측.
+신규 기기 셋업 시 자동 조달되는 자산: `silero_vad.onnx`(vad.py 자동 다운로드),
+openwakeword base 모델(`openwakeword.utils.download_models()` 1회 필요).
 
-**GPU 이식 후 — Phase 4+5 E2E 검증 필수 (현재 미검증)**
+**Phase 4+5 E2E 검증 — GPU 1턴 통과 (2026-06-03)**
 - Phase 4: Wake word → 발화 → Discord 채팅 채널 LLM 응답 게시 (마크다운 없음, 히스토리 동작)
 - Phase 5: Wake word → 발화 → Discord 음성 채널 TTS 응답 (에코 방지, 세션 모드, cue 동작)
 - E2E 검증 통과 후 Phase 6 진입.
@@ -82,6 +88,82 @@ Discord mobile (재생)
 - **wake word**: "크랭크 오토" (openwakeword 커스텀, "hey otto" 오탐 문제로 피벗)
 
 ### 날짜별 작업 내역
+
+#### 2026-06-05 — E2E 타임로그 + 슬립오토 제거 + 분기 통합 (master로 일원화)
+
+**E2E 타임로그 Discord 출력 (커밋 11f1667)**
+- `bot.py` `TimingLog` 누적기: 턴별 타이밍을 기존처럼 `[TIMING]`으로 콘솔/`otto_events.log`에
+  남기면서(원칙 8 유지), 턴 종료 시 Discord 채팅에 통합 코드블록으로 1회 게시(도배 방지).
+  캡처/STT는 `_capture_and_transcribe`, LLM/TTS는 `_run_llm`에서 기록.
+
+**슬립 오토 종료 키워드 제거 (커밋 11f1667)**
+- `_SESSION_CLOSE_KEYWORDS`(슬립 오토/그만/종료해 등)와 체크 블록 삭제. 세션은 **무응답
+  타임아웃으로만 종료**. 사용자 피드백: "잠깐 대답 안 하면 바로 끊겨서 종료어 필요 없음."
+- 부수효과: 미해결로 남아있던 **"종료 키워드가 LLM 스킵 못 해 한 마디 응답 후 종료" 버그 동시 해소.**
+
+**warm 발화끝→첫소리 재측정 — 기준 충족 (테스트 완료)**
+- GPU warm 연속 5턴(`otto_events.log` 2026-06-05 15:42~15:43): 발화끝(STT시작)→첫 소리
+  = STT + LLM 첫 voice 토큰 + TTS 첫음절.
+- 첫 턴 ~5.3s, **warm 연속 턴 평균 ~3.4s** (2.98~3.97s). docs 목표(5~6s) **충족.**
+- 병목은 **LLM 첫 토큰 ~1.9s**(전체의 ~55%). STT(~0.6s)·TTS 첫음절(~0.35s)은 이미 최적.
+
+**분기 통합 — master로 일원화 (커밋 진행 중)**
+- 상황: 노트북이 `master`에서 Phase 6(1fa927a)을 작업·push, 데스크탑은 `feat/tts-latency-ws-overlap`에서
+  GPU+TTS 작업. 두 갈래가 `1270302`에서 분기돼 서로의 작업을 갖지 않음.
+- 결정: **master로 통합, 이후 master에서 작업.** `feat`를 master에 머지.
+- 충돌 해소: `bot.py`는 Phase 6의 통합 라우터 `run_voice_first`(voice-first + tool/filler) 채택 —
+  voice_response가 짧게 강제돼 토큰 overlap 실이득이 작으므로 스트리밍 경로(`run_voice_streaming`/
+  `speak_streaming`)는 **코드로 보존하되 bot은 미사용**. `pyproject.toml`은 양쪽 의존성 union.
+  `.gitignore`는 Phase 6의 인코딩 수정본 채택(+`/env`).
+
+상세 내역: `Documentations(Claude)/daily/2026-06-05-car-assistant.md`
+
+---
+
+#### 2026-06-03 — GPU 데스크탑 이식 + TTS 지연 최적화 (④ 플래그 + ⑥ WS overlap)
+
+**GPU 이식 (커밋 3af7eee)**
+
+데스크탑 RTX 5070 Ti(Blackwell, sm_120)로 이식. clone + `uv sync` + config cuda 전환은
+사용자가 선행. 남은 블로커를 해결:
+
+| 문제 | 원인 | 해결 |
+|------|------|------|
+| `cublas64_12.dll not found`로 STT 추론 실패 | Windows에 CUDA 런타임 DLL이 PATH에 없음 | `nvidia-cublas-cu12 / cudnn-cu12 / cuda-runtime-cu12`(12.9, Blackwell 지원) pip 추가 |
+| add_dll_directory만으론 "cannot be loaded" | cublas가 의존하는 cudart64_12.dll 부재 | cuda-runtime 패키지 추가 + PATH/add_dll_directory 등록을 `core/cuda_setup.py`로 모듈화 |
+| 첫 추론 23s | sm_120 PTX JIT 컴파일(1회성) | CUDA ComputeCache에 캐시됨 → warm 0.31~0.75s |
+
+- `core/cuda_setup.py`: nvidia 네임스페이스 패키지(`__path__`)의 cublas/cudnn/runtime/nvrtc
+  bin을 PATH + `os.add_dll_directory`에 등록. `stt.py`가 `faster_whisper` import 전 호출.
+  Windows 아니거나 미설치 시 no-op(노트북 CPU·Linux 안전).
+- 신규 기기 자산: `silero_vad.onnx`(vad.py가 GitHub에서 자동 다운로드, 8kHz 모델),
+  openwakeword base 모델(melspectrogram/embedding — `download_models()` 1회).
+- **실측**: STT warm 0.75s (CPU 11~13s 대비 ~15배). E2E 1턴 GPU 검증 통과(otto_events.log):
+  캡처 3.8s → STT 0.75s → LLM voice 2.82s → TTS 첫음절 1.11s → 발화끝→첫소리 ~5.2s
+  (CPU ~26s 대비). docs 목표(STT 1~2s / 첫소리 5~6s) 달성.
+
+**TTS 지연 최적화 (커밋 05faf6a)** — 모델 품질 불변(Sonnet 유지: Phase 6 tool-use 신뢰성).
+
+- ④ `optimize_streaming_latency=3` + ffmpeg `-f mp3`(probe 생략)·`-analyzeduration 0`·
+  `-fflags nobuffer`. 라이브 실측 첫 MP3 청크 0.41s. `speak()`의 ffmpeg 브릿지를
+  `_play_mp3_stream` 헬퍼로 추출(HTTP/WS 공용).
+- ⑥ WebSocket overlap: `ElevenLabsTTS.stream_ws`(stream-input WS, 텍스트 청크 즉시 송신),
+  `orchestrator.run_voice_streaming`(스트리밍 중 voice_response 부분 디코딩 — streaming
+  JSON string 파서: `_find_value_end` + `_decode_partial`), `bot._run_llm`이 asyncio.Queue로
+  voice 토큰을 `speak_streaming`에 흘림. 첫 voice 토큰 즉시 TTS 시작 → voice·text 생성과 병렬.
+  *(2026-06-05 master 통합 시 bot은 voice-first 경로로 단일화 — 이 경로는 코드로만 보존.)*
+- **트레이드오프(실측 확인)**: `chunk_length_schedule=[50]`(ElevenLabs 최소)이라 overlap 실이득은
+  50자 초과 응답에서 큼(긴 응답: 첫 오디오가 전체 텍스트 피드 완료 전 도착 실증). 50자 미만
+  짧은 응답은 HTTP와 대체로 동등(연결·ffmpeg 조기 준비 이득은 유지). 회귀 없음.
+
+**검증 (tests/, 네트워크 격리 + 라이브)**
+- `test_voice_streaming.py`: 파서 5케이스(normal/이스케이프/빈voice/코드펜스/유니코드) × chunk
+  1·3·통짜 — voice_chunk 합·voice_end 1회·순서 전부 통과.
+- `verify_tts_live.py`: 라이브 HTTP 0.41s / WS / WS→ffmpeg PCM 디코딩 / overlap 실증 통과.
+- 기존 `tests/test_orchestrator.py`는 **스테일**(제거된 `SYSTEM_PROMPT` import, 옛 5-tier 인텐트
+  라벨 참조 — Phase 4 3-tier 리팩터 잔재). 이번 작업 범위 아님. 추후 정리 필요.
+
+---
 
 #### 2026-06-02 — Phase 6 MCP/native 툴 통합 구현 (런타임 미검증)
 
