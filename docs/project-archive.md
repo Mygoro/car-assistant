@@ -16,8 +16,8 @@ Byunghun Kwon · 2022195171
 - **TTS 지연 최적화 완료** (2026-06-03) — optimize_streaming_latency + ffmpeg 버퍼 off + WebSocket overlap (코드 보존; bot은 voice-first 경로 사용)
 - **E2E 타임로그 + 슬립오토 제거 완료** (2026-06-05) — 타임로그 Discord 출력, 세션은 무응답 타임아웃으로만 종료(슬립오토 버그 동시 해소). warm 발화끝→첫소리 **~3.4s** 실측, 목표 충족.
 - **분기 통합 완료** (2026-06-05) — `feat/tts-latency-ws-overlap`(GPU+TTS)와 `master`(Phase 6)가 `1270302`에서 분기돼 있던 것을 master로 통합. **이후 master에서 작업.**
-- **Phase 6 진행 중** — Notion·Calendar·Hyundai 연결 완료 (2026-06-05), KakaoMap 미연결
-- **다음 작업**: KakaoMap 연결 → E2E 통합 테스트
+- **Phase 6 진행 중** — Notion·Calendar·Hyundai·KakaoMap 연결 완료 (2026-06-05)
+- **다음 작업**: E2E 통합 테스트 (자연어 → 툴 호출 라우팅 검증)
 - **개발 환경**: 데스크탑(NVIDIA RTX 5070 Ti) 이식 완료. 노트북은 CPU-only 개발용
 - **전시 일정**: **2026-06-09 전시**
 
@@ -25,11 +25,22 @@ Byunghun Kwon · 2022195171
 
 ### ⚡ 다음 세션 시작 지점 (2026-06-05 이후)
 
-**KakaoMap → E2E 통합 테스트**
+**E2E 통합 테스트 (Notion + Calendar + Hyundai + KakaoMap)**
 
-1. `KAKAO_REST_API_KEY` `.env` 등록
-2. `kakao.py` 실구현 (`search_nearby_places`, `reverse_geocode`)
-3. E2E 통합 테스트 (Notion + Calendar + Hyundai + KakaoMap 전부)
+- `uv run tools/chat_test.py` → 자연어 발화로 Claude의 툴 호출 라우팅 검증
+- 확인: 인텐트 분류, 툴 선택 정확도, dual-response(voice/text), `otto_events.log`의 `Tool call:`/`Tool result:`
+- 이후 실제 봇(`run.bat`)에서 음성 E2E
+
+---
+
+### 2026-06-05 작업 로그 (KakaoMap)
+
+- **카카오 콘솔 설정 발견**: 기존 kakao 툴들은 **[카카오맵] 사용설정이 OFF라 한 번도 동작 안 했음**(403 Forbidden). 2024-12 이후 신규 앱은 카카오맵 사용설정 필수 — 켜서 해결.
+- **`search_nearby_places` 좌표 선택화**: `keyword.json`은 좌표가 optional이고 질의어에서 지역명을 직접 파싱(`same_name.region`). lon/lat 없으면 `query="강남역 주유소"`만으로 동작. orchestrator 스키마 `required`를 `["query"]`로 축소. → **GPS 없이도 검색 가능, 전시 데모 충분.**
+- **`get_directions` 신규**: 카카오모빌리티 길찾기(`apis-navi.kakaomobility.com/v1/directions`). 지명 문자열 → 내부 `_geocode`(keyword 첫 결과) → 경로 탐색을 단일 native 함수로 체이닝(음성 지연 방지). `summary=true`로 vertexes 폭주 차단. 출력: "강남역→잠실역: 약 16분, 6.7km, 통행료 0원". 실호출 검증 통과.
+- **키 구조**: 길찾기는 원래 developers.kakaomobility.com 별도 키(`KAKAOMOBILITY_REST_API_KEY`)가 필요하다는 게 공식 입장이나, **실측상 기존 `KAKAO_REST_API_KEY`로 통과**. 코드는 별도 키 우선 + 기존 키 폴백 구조라 어느 쪽이든 동작.
+- **GPS 가용성 확정**: 현대차 공식 API 엔드포인트 전수 확인 → 위치/GPS 0개(DTE/odometer/EV/경고등 7종뿐). 카카오 API도 좌표는 입력 전용(위치 측정 불가). live GPS는 폰 능동 전송(브라우저 geolocation 등) 필요 → Phase 7로 보류. **전시장은 고정 위치라 애초에 불필요.**
+- 보류: `get_region`·`address_to_coord`·카테고리 검색·세션 위치 툴 — GPS 또는 데모 보강 시점에 재검토.
 
 ---
 

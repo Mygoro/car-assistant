@@ -62,14 +62,17 @@ def _print_turn(intent: str, route: str, voice: str, text: str):
 async def _stream_turn(orch: Orchestrator, transcript: str, tts_client: ElevenLabsTTS | None = None):
     intent = classify_intent(transcript)
     route = cfg.get("intent_routing", {}).get(intent) or cfg.get("intent_routing", {}).get("default", "?")
-    parts: list[str] = []
-    async for delta in orch.stream_handle(transcript):
-        if delta.text:
-            parts.append(delta.text)
-    voice = "".join(parts)
+    print(f"{GREY}[intent: {intent} -> {route}]{RESET}")
+
+    voice = ""
+    async for stage, content in orch.run_voice_first(transcript):
+        if stage == "filler":
+            print(f"{YELLOW}[filler] 툴 호출 중... ({content}){RESET}")
+        elif stage == "voice":
+            voice = content
+
     char_count = len(voice)
     warn = f" {YELLOW}(!){RESET}" if char_count > 100 else ""
-    print(f"{GREY}[intent: {intent} -> {route}]{RESET}")
     if not voice:
         print(f"{GREY}[skip] voice_response 빈 문자열{RESET}\n")
     else:

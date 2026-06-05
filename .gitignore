@@ -11,3 +11,4 @@ otto_events.log
 .obsidian/workspace.json
 core/native_tools/google_credentials.json
 core/native_tools/calendar_token.json
+core/native_tools/hyundai_token.json

@@ -279,7 +279,7 @@ class Orchestrator:
             delete_calendar_event,
         )
         from .native_tools.vehicle import get_vehicle_status
-        from .native_tools.kakao import search_nearby_places, reverse_geocode
+        from .native_tools.kakao import search_nearby_places, reverse_geocode, get_directions
 
         self._register_native(
             name="get_calendar_events",
@@ -347,18 +347,38 @@ class Orchestrator:
         )
         self._register_native(
             name="search_nearby_places",
-            description="현재 위치 기준 주변 장소를 검색. 주유소, 충전소, 맛집 등.",
+            description=(
+                "장소 검색. 주유소, 충전소, 맛집 등. 좌표(lon/lat)는 선택 — "
+                "좌표를 모르면 지역명을 query에 넣어 검색(예: query='강남역 주유소')."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "검색어, e.g. 주유소"},
-                    "lon": {"type": "number", "description": "경도"},
-                    "lat": {"type": "number", "description": "위도"},
-                    "radius_m": {"type": "integer", "description": "검색 반경 미터 (기본 5000)"},
+                    "query": {"type": "string", "description": "검색어. 좌표가 없으면 지역명 포함, e.g. '강남역 주유소'"},
+                    "lon": {"type": "number", "description": "경도 (선택)"},
+                    "lat": {"type": "number", "description": "위도 (선택)"},
+                    "radius_m": {"type": "integer", "description": "검색 반경 미터 (기본 5000, 좌표 있을 때만)"},
                 },
-                "required": ["query", "lon", "lat"],
+                "required": ["query"],
             },
             fn=search_nearby_places,
+        )
+        self._register_native(
+            name="get_directions",
+            description=(
+                "자동차 길찾기. 출발지→목적지 소요시간/거리/통행료 조회. "
+                "지명만 주면 됨(GPS 불필요), e.g. origin='강남역', destination='잠실역'."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "origin": {"type": "string", "description": "출발지 지명/주소. 예: 강남역, 판교 카카오"},
+                    "destination": {"type": "string", "description": "목적지 지명/주소"},
+                    "priority": {"type": "string", "description": "RECOMMEND(기본)/TIME(최단시간)/DISTANCE(최단거리)"},
+                },
+                "required": ["origin", "destination"],
+            },
+            fn=get_directions,
         )
         self._register_native(
             name="reverse_geocode",
