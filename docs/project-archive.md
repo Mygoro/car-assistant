@@ -16,20 +16,40 @@ Byunghun Kwon · 2022195171
 - **TTS 지연 최적화 완료** (2026-06-03) — optimize_streaming_latency + ffmpeg 버퍼 off + WebSocket overlap (코드 보존; bot은 voice-first 경로 사용)
 - **E2E 타임로그 + 슬립오토 제거 완료** (2026-06-05) — 타임로그 Discord 출력, 세션은 무응답 타임아웃으로만 종료(슬립오토 버그 동시 해소). warm 발화끝→첫소리 **~3.4s** 실측, 목표 충족.
 - **분기 통합 완료** (2026-06-05) — `feat/tts-latency-ws-overlap`(GPU+TTS)와 `master`(Phase 6)가 `1270302`에서 분기돼 있던 것을 master로 통합. **이후 master에서 작업.**
-- **Phase 6 진행 중** — Notion·Calendar·Hyundai·KakaoMap 연결 완료 (2026-06-05)
-- **다음 작업**: E2E 통합 테스트 (자연어 → 툴 호출 라우팅 검증)
+- **Phase 6 완료** (2026-06-06) — Notion·Calendar·Hyundai·KakaoMap + web_search(Brave) + Google Places(get_place_details). E2E 라우팅 검증 통과.
+- **Phase 7/8 신규 정의** (2026-06-06) — 7: 컨텍스트 오케스트레이션 & 페르소나 / 8: 품질 하드닝. 구 7(아카이브)·8(폴백)은 부록으로 이동.
+- **다음 작업**: Phase 7 착수 (memory.md 사용자 컨텍스트 + 소스 라우팅 판단원칙 + 맥락 통합)
 - **개발 환경**: 데스크탑(NVIDIA RTX 5070 Ti) 이식 완료. 노트북은 CPU-only 개발용
 - **전시 일정**: **2026-06-09 전시**
 
 ---
 
-### ⚡ 다음 세션 시작 지점 (2026-06-05 이후)
+### ⚡ 다음 세션 시작 지점 (2026-06-06 이후)
 
-**E2E 통합 테스트 (Notion + Calendar + Hyundai + KakaoMap)**
+**Phase 7 — 컨텍스트 오케스트레이션 & 페르소나 (신규)**
 
-- `uv run tools/chat_test.py` → 자연어 발화로 Claude의 툴 호출 라우팅 검증
-- 확인: 인텐트 분류, 툴 선택 정확도, dual-response(voice/text), `otto_events.log`의 `Tool call:`/`Tool result:`
-- 이후 실제 봇(`run.bat`)에서 음성 E2E
+- `core/memory.md`에 사용자 컨텍스트(이름·차량·반복 맥락·어투·FAQ) 작성 → 매 세션 재입력 제거
+- 시스템 프롬프트에 **소스 라우팅 판단원칙** 명문화: 개인정보·일정→노션/캘린더, 위치·거리→카카오, 영업시간·평점·리뷰→Places, 일반·최신→Brave, 차량→Hyundai. 복합질의는 조합.
+- **맥락 통합(구 이슈 5)**: 노션 맥락(예: 여자친구 데이트)을 후속 장소추천에 엮어 특화 답변
+- 상세: `docs/implementation-manual.md` Phase 7. 미뤄둔 것: 같은 문서 "보류 항목" 절.
+
+---
+
+### 2026-06-06 작업 로그 (E2E 피드백 7건 + 에이닷 인사이트 + 로깅 개편)
+
+E2E에서 나온 7개 피드백을 인과별로 처리. 핵심은 "기능은 되는데 맥락·품질이 부족"이었고, 그중 소스의 구조적 한계에서 온 것을 갈라냈다.
+
+- **차량 조회 실패 = 토큰 누적 버그**: 2시간마다 자동 갱신하는데 갱신 응답의 새 refresh 토큰을 저장 안 해, 한 번 실패하면 낡은 토큰으로 계속 재시도→500. 새 토큰도 저장하도록 수정(`vehicle.py`). 재인증 없이 자동 갱신.
+- **음성 주소 억제**: 전체 도로명을 TTS가 읽어봐야 운전 중 무용 → voice는 장소명+동/역+거리만, 전체 주소는 텍스트에만(프롬프트).
+- **미래 교통 예측**: 카카오내비 `future/directions` 발견 → `get_directions`에 `departure_time` 분기. "내일 9시 출발 기준" 답변 가능.
+- **장소 상세(영업시간·평점·리뷰) — 소스 교체 결정**: 카카오는 미제공. Brave 웹검색으로 때우려 했으나 스니펫만 줘 부정확하고, 부실한 결과에 모델이 한 질문에 9번 재검색해 무료한도를 갉음. → **Google Places API(`get_place_details`) 채택**, Brave는 일반정보 보조로 격하 + 재검색 1~2회 제한 + 결과 정제. 상세 결정: [[car-assistant-003-place-data-source-google-places]].
+- **에이닷 개발기 반영**: STT 고유명사 보정 + 환각 방지를 프롬프트에 위임(별도 모듈 대신 Claude에). 추론모델(Opus) 라우팅은 음성 지연 이유로 **Sonnet 통일**.
+- **음성 숫자 깨짐**: TTS가 "17.5km"를 못 읽음(`latency=3` 정규화 생략) → voice에서 숫자·단위를 답변 언어로 풀어쓰기("십칠 점 오 킬로미터").
+- **로깅 시스템 개편**: daily/decision/report 에이전트의 경로가 옛 머신(win10)으로 깨져 report가 늘 빈손이었음 → 경로 수정. daily 템플릿을 changelog식 → **인과·인사이트 서사**로 전환(에이닷 스타일). `Claude Base/.claude/agents/`.
+
+**인사이트**: ① 구조화된 로컬 데이터는 검색이 아니라 전용 API로. ② 음성 UX에서 모델 재시도 폭주 = 비용·지연, 품질 높이거나 "못 찾음"으로 멈추게. ③ 상용팀(에이닷)과 독립적으로 같은 설계결론 — 전시 발표 프레이밍.
+
+커밋: `bc67f7c`(토큰+라우팅) · `8842dbf`(에이닷 프롬프트) · `a70c3bc`(주소·미래교통·Brave) · `3e4c490`(검색 정제) · `65d1734`(Places).
 
 ---
 

@@ -35,11 +35,16 @@
   - TTS 지연 최적화 (2026-06-03) — ④ optimize_streaming_latency/ffmpeg + ⑥ WebSocket overlap. *코드 보존; bot은 통합 라우터 `run_voice_first`(voice-first) 경로 사용 — voice_response는 짧게 강제돼 토큰 overlap 실이득 작음.*
   - E2E 타임로그 Discord 출력 + 슬립 오토 종료 키워드 제거 (2026-06-05). warm 발화끝→첫소리 **~3.4s** 실측, docs 목표(5~6s) 충족.
 - **진행 중**
-  - Phase 6 — MCP/native 툴 통합 (2026-06-02): **코드 작성 완료, 런타임 연결 미검증**
-    - Orchestrator tool-use 루프 (ToolHandle 레지스트리, AsyncExitStack 기반 MCP 생명주기)
-    - Notion stdio MCP + native 툴 3종 (Calendar 실구현 / Hyundai Bluelink stub / KakaoMap)
+  - Phase 6 — MCP/native 툴 통합: **런타임 검증 완료** (2026-06-06)
+    - Orchestrator tool-use 루프 + Notion stdio MCP + native 툴
+    - Calendar(실) / Hyundai(실, 토큰 자동갱신) / KakaoMap(검색·길찾기·미래교통) /
+      web_search(Brave) / get_place_details(Google Places)
 - **다음 (세션 시작 시)**
-  1. **Phase 6 런타임 검증** — `uv sync` → `.env`에 `NOTION_API_KEY`/`KAKAO_REST_API_KEY` 등록 → `uv run tools/chat_test.py` → `!tools` 확인 → Calendar OAuth 실행 → "내일 일정 뭐야?" / "기름 얼마 남았어?" 테스트 (`docs/project-archive.md` 다음 세션 시작 지점 체크리스트 참조)
+  1. **Phase 7 — 컨텍스트 오케스트레이션 & 페르소나** (신규): `core/memory.md`에 사용자
+     컨텍스트(이름·차량·반복 맥락·어투) 상시 주입 + 소스 라우팅 판단원칙(노션/카카오/
+     Places/Brave/차량) + 맥락 통합(구 이슈 5). `docs/implementation-manual.md` Phase 7 참조.
+  2. 이어서 **Phase 8 — 품질 하드닝**(에이닷 잔여 과제 코드화 + 회귀 검증). 미뤄둔 것은
+     매뉴얼 "보류 항목" 절 참조.
 
 ---
 
@@ -61,9 +66,12 @@
 4. **에러를 삼키지 않는다.** `except Exception: pass` 금지. 항상 로깅하고 사용자가 알아야 할 것은 알린다.
 5. **모델 인스턴스는 봇 시작 시 한 번만 생성한다.** 매 호출마다 재로드 금지.
 6. **민감 값은 `.env`에만 저장.** 코드에 하드코딩 금지.
-7. **세션 종료 또는 `/log` 시 두 문서를 반드시 갱신한다.**
+7. **세션 종료 또는 `/log` 시 문서를 갱신한다.**
    - `docs/project-archive.md` — 날짜별 작업 내역, 결정 사항, 다음 시작 지점
-   - `docs/implementation-manual.md` — 완료된 Phase 섹션을 실제 구현에 맞게 수정 (설계와 달라진 부분 반드시 반영)
+   - `docs/implementation-manual.md` — 완료된 Phase를 실제 구현에 맞게 수정 (설계와 달라진 부분 반영)
+   - daily/decision 로그(발트 `Documentations(Claude)/`)는 전용 에이전트가 작성한다.
+     **형식 원칙: 명령어·파라미터·파일 나열식 changelog 금지. 인과(왜 했나)와 인사이트
+     (무엇을 배웠나)를 쉬운 언어로 담는다.** 기술 세부는 추론을 떠받칠 때만 남긴다.
 8. **테스트 시 반드시 `otto_events.log`를 확인한다.** 콘솔 스팸 때문에 중요한 이벤트가 묻히므로, 문제 진단 시 로그 파일을 먼저 읽고 판단한다. 새 터미널에서 열려도 이 습관을 유지할 것.
 
 ---
