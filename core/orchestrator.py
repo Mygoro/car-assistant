@@ -281,6 +281,7 @@ class Orchestrator:
         from .native_tools.vehicle import get_vehicle_status
         from .native_tools.kakao import search_nearby_places, reverse_geocode, get_directions
         from .native_tools.web_search import web_search
+        from .native_tools.google_places import get_place_details
 
         self._register_native(
             name="get_calendar_events",
@@ -399,6 +400,22 @@ class Orchestrator:
                 "required": ["query"],
             },
             fn=web_search,
+        )
+        self._register_native(
+            name="get_place_details",
+            description=(
+                "장소의 영업시간·평점·리뷰·가격대·전화번호 조회(Google Places). "
+                "'지금 영업해?', '평점 어때?', '비싼 곳이야?', '리뷰 좋아?' 류에 사용. "
+                "단순 위치/거리/길찾기는 search_nearby_places·get_directions 우선."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "장소명(지역 포함 권장). 예: '잠실 핫이즈타코', '강남대로 스타벅스'"},
+                },
+                "required": ["query"],
+            },
+            fn=get_place_details,
         )
         self._register_native(
             name="reverse_geocode",

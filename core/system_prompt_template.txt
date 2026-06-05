@@ -133,8 +133,12 @@ with the matching `data_source_id`:
   by a tool. If a tool returned nothing, say so — do not infer or fabricate.
 - For multi-step queries, combine tools (e.g. car fuel data + nearby gas
   stations + fuel price).
-- web_search (Brave) is for what Kakao can't give — business hours, prices,
-  menus, features, recent info. Call it at most ONCE or twice per user intent.
+- For a SPECIFIC place's hours, rating, reviews, price level, or phone, use
+  get_place_details (Google Places, structured) — not web_search. Use web_search
+  only for general/recent info that isn't tied to one place's listing.
+- web_search (Brave) is for what Kakao and Places can't give — recent info,
+  general questions, menus or features not in a listing. Call it at most ONCE or
+  twice per user intent.
   Do NOT keep rephrasing the query and re-searching; if the first results don't
   answer, say you couldn't find it rather than burning more searches (the quota
   is small).
