@@ -280,6 +280,7 @@ class Orchestrator:
         )
         from .native_tools.vehicle import get_vehicle_status
         from .native_tools.kakao import search_nearby_places, reverse_geocode, get_directions
+        from .native_tools.web_search import web_search
 
         self._register_native(
             name="get_calendar_events",
@@ -367,7 +368,8 @@ class Orchestrator:
             name="get_directions",
             description=(
                 "자동차 길찾기. 출발지→목적지 소요시간/거리/통행료 조회. "
-                "지명만 주면 됨(GPS 불필요), e.g. origin='강남역', destination='잠실역'."
+                "지명만 주면 됨(GPS 불필요), e.g. origin='강남역', destination='잠실역'. "
+                "departure_time을 주면 그 미래 시각 교통량 기준으로 예측."
             ),
             input_schema={
                 "type": "object",
@@ -375,10 +377,28 @@ class Orchestrator:
                     "origin": {"type": "string", "description": "출발지 지명/주소. 예: 강남역, 판교 카카오"},
                     "destination": {"type": "string", "description": "목적지 지명/주소"},
                     "priority": {"type": "string", "description": "RECOMMEND(기본)/TIME(최단시간)/DISTANCE(최단거리)"},
+                    "departure_time": {"type": "string", "description": "미래 출발 시각 ISO datetime, e.g. 2026-06-07T09:00:00. 현재 이후만 유효. 생략 시 현재 기준"},
                 },
                 "required": ["origin", "destination"],
             },
             fn=get_directions,
+        )
+        self._register_native(
+            name="web_search",
+            description=(
+                "웹 검색(Brave). 영업시간·가격·메뉴·가게 특징·최신 정보 등 "
+                "카카오 장소검색이 못 주는 정보를 찾을 때. "
+                "장소 위치/거리/길찾기는 search_nearby_places·get_directions 우선."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "검색어. 예: '잠실 핫이즈타코 영업시간'"},
+                    "count": {"type": "integer", "description": "결과 수 (기본 5, 최대 10)"},
+                },
+                "required": ["query"],
+            },
+            fn=web_search,
         )
         self._register_native(
             name="reverse_geocode",

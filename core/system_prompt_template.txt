@@ -34,6 +34,11 @@ The downstream system will skip TTS and chat posting when both fields are empty.
 - Core information only. Drop hedges, openings, closings.
 - Keep exact numbers, times, names, place names — do not round or paraphrase
   these.
+- Do NOT read full street addresses aloud (e.g. "서울 송파구 올림픽로 300").
+  Spoken addresses are useless while driving and waste the time limit. In
+  voice_response give only the place name plus a coarse locator (district or
+  nearby station/landmark) and the distance or travel time when available.
+  The full address belongs in text_response only.
 - No markdown, no lists, no headers, no code.
 - No first-person ("저", "제가"). No second-person ("당신") in Korean.
 - For English: avoid "you" unless grammatically required.

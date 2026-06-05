@@ -5,6 +5,7 @@ KAKAO_REST_API_KEY 환경변수 없으면 stub 응답 반환.
 """
 import logging
 import os
+import re
 
 import httpx
 
@@ -134,13 +135,27 @@ async def _geocode(client: httpx.AsyncClient, name: str) -> tuple[float, float, 
     return float(d["x"]), float(d["y"]), d.get("place_name", name)
 
 
+def _normalize_departure_time(value: str) -> str | None:
+    """ISO/자연어 datetime → 카카오 future API용 YYYYMMDDHHMM. 자릿수 부족 시 None.
+
+    예: "2026-06-07T09:00:00" → "202606070900", "202606070900" → 그대로.
+    """
+    digits = re.sub(r"\D", "", value or "")
+    return digits[:12] if len(digits) >= 12 else None
+
+
 async def get_directions(args: dict) -> str:
     """출발지→목적지 자동차 경로의 소요시간/거리/통행료.
 
     출발지/목적지를 지명 문자열로 받아 내부에서 좌표로 변환 후 경로 탐색.
     GPS 불필요 — 두 지명 사이 경로를 서버가 계산한다.
 
-    args: origin(지명), destination(지명), priority(RECOMMEND/TIME/DISTANCE, 기본 RECOMMEND)
+    departure_time(선택)을 주면 그 미래 시각 기준 교통량으로 예측
+    (/v1/future/directions). 없으면 현재 시각 기준(/v1/directions).
+
+    args: origin(지명), destination(지명),
+          priority(RECOMMEND/TIME/DISTANCE, 기본 RECOMMEND),
+          departure_time(선택, ISO datetime 또는 YYYYMMDDHHMM, 현재 이후만 유효)
 
     인증: 지오코딩은 KAKAO_REST_API_KEY(Local API), 경로 탐색은 KAKAOMOBILITY_REST_API_KEY
     (developers.kakaomobility.com 별도 발급). 후자 미설정 시 전자로 폴백.
@@ -153,8 +168,15 @@ async def get_directions(args: dict) -> str:
     origin_name = args.get("origin")
     dest_name = args.get("destination")
     priority = args.get("priority", "RECOMMEND")
+    departure_raw = args.get("departure_time")
     if not origin_name or not dest_name:
         return "[error] origin, destination이 필요합니다."
+
+    departure_time = None
+    if departure_raw:
+        departure_time = _normalize_departure_time(departure_raw)
+        if departure_time is None:
+            return f"[error] departure_time 형식 오류: '{departure_raw}' (YYYYMMDDHHMM 필요)"
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -168,16 +190,19 @@ async def get_directions(args: dict) -> str:
             o_lon, o_lat, o_label = origin
             d_lon, d_lat, d_label = dest
 
-            resp = await client.get(
-                f"{_NAVI_BASE}/v1/directions",
-                headers=_navi_headers(),
-                params={
-                    "origin": f"{o_lon},{o_lat}",
-                    "destination": f"{d_lon},{d_lat}",
-                    "priority": priority,
-                    "summary": "true",
-                },
-            )
+            params = {
+                "origin": f"{o_lon},{o_lat}",
+                "destination": f"{d_lon},{d_lat}",
+                "priority": priority,
+                "summary": "true",
+            }
+            if departure_time:
+                params["departure_time"] = departure_time
+                endpoint = f"{_NAVI_BASE}/v1/future/directions"
+            else:
+                endpoint = f"{_NAVI_BASE}/v1/directions"
+
+            resp = await client.get(endpoint, headers=_navi_headers(), params=params)
             resp.raise_for_status()
             data = resp.json()
 
@@ -192,7 +217,11 @@ async def get_directions(args: dict) -> str:
         minutes = round(summary["duration"] / 60)
         km = round(summary["distance"] / 1000, 1)
         toll = summary.get("fare", {}).get("toll", 0)
-        return f"{o_label} → {d_label}: 약 {minutes}분, {km}km, 통행료 {toll:,}원"
+        when = ""
+        if departure_time:
+            t = departure_time
+            when = f"{t[4:6]}월 {t[6:8]}일 {t[8:10]}:{t[10:12]} 출발 기준 "
+        return f"{when}{o_label} → {d_label}: 약 {minutes}분, {km}km, 통행료 {toll:,}원"
 
     except httpx.HTTPStatusError as e:
         if e.response.status_code in (401, 403):
