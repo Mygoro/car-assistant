@@ -43,6 +43,10 @@ _event_handler.setLevel(logging.INFO)
 _event_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 log.addHandler(_event_handler)
 logging.getLogger("core.tts").addHandler(_event_handler)  # CUE 로그 파일 기록
+# 툴 호출/결과/MCP 연결(core.orchestrator)과 요청별 토큰 사용량(provider)을 파일로 남긴다.
+# 이전엔 콘솔로만 나가 rate limit·캐시 적중을 사후 진단할 수 없었다.
+logging.getLogger("core.orchestrator").addHandler(_event_handler)
+logging.getLogger("core.providers.anthropic").addHandler(_event_handler)
 
 with open("config.yaml", encoding="utf-8") as _f:
     _cfg = yaml.safe_load(_f)

@@ -87,6 +87,15 @@ def build_system_prompt() -> str:
 # Response parsing
 # ---------------------------------------------------------------------------
 
+# JSON 파싱 실패 + voice 구제까지 실패했을 때 읽어줄 안전 멘트.
+# 절대 raw JSON을 TTS로 흘려보내지 않기 위함(필드명·구조가 그대로 낭독되는 사고 방지).
+_SAFE_VOICE_FALLBACK = "응답을 처리하다 문제가 생겼어요. 다시 한 번 말씀해 주실래요?"
+
+# voice_response 하드 상한. 프롬프트 목표는 1~2문장(50~100자)이며,
+# 약간의 초과는 허용하되 폭주(수백 자 → 수십 초 낭독)는 여기서 차단한다.
+_VOICE_MAX_CHARS = 130
+
+
 def parse_dual_response(raw: str) -> tuple[str, str]:
     try:
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.DOTALL)
@@ -95,14 +104,31 @@ def parse_dual_response(raw: str) -> tuple[str, str]:
         text = obj.get("text_response", "")
         return voice, text
     except (json.JSONDecodeError, KeyError, AttributeError) as e:
-        log.warning("JSON parse failed: %s. Raw: %s", e, raw[:100])
-        return raw[:100], raw
+        log.warning("JSON parse failed: %s. Raw: %s", e, raw[:200])
+        # 구제 1: voice_response 값만 추출(JSON이 깨졌거나 max_tokens로 잘렸어도
+        # _decode_partial이 파싱 가능한 최대 prefix를 복구). raw JSON은 절대 읽지 않는다.
+        m = _VOICE_START_RE.search(raw)
+        if m:
+            tail = raw[m.end():]
+            end = _find_value_end(tail)
+            value_raw = tail if end < 0 else tail[:end]
+            voice = _decode_partial(value_raw)
+            if voice:
+                return voice, raw
+        # 구제 2: voice도 못 건지면 안전 멘트만 읽고, 깨진 원문은 채팅(text)으로만.
+        return _SAFE_VOICE_FALLBACK, raw
 
 
 def validate_voice_length(voice: str) -> str:
-    if len(voice) > 100:
-        log.warning("voice_response exceeds 100 chars (%d): %s...", len(voice), voice[:60])
-    return voice
+    if len(voice) <= _VOICE_MAX_CHARS:
+        return voice
+    log.warning("voice_response %d자 초과 — 잘라냄: %s...", len(voice), voice[:60])
+    head = voice[:_VOICE_MAX_CHARS]
+    # 상한 이내의 마지막 문장 종결부호에서 자른다.
+    cut = max(head.rfind("."), head.rfind("!"), head.rfind("?"), head.rfind("。"))
+    if cut >= 40:                       # 너무 앞에서 잘려 내용이 사라지는 것 방지
+        return head[:cut + 1].rstrip()
+    return head.rstrip() + "…"          # 종결부호가 없으면 하드 컷 + 말줄임
 
 
 # ---------------------------------------------------------------------------

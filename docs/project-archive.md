@@ -89,6 +89,47 @@ Discord mobile (재생)
 
 ### 날짜별 작업 내역
 
+#### 2026-06-05 (오후) — Phase 6 런타임 검증(Notion) + LLM 견고성/rate limit 대응
+
+**Phase 6 런타임 검증 — Notion MCP 연결 성공 (실서비스 첫 외부 연결)**
+- 셋업 이슈 해소: openwakeword 기본 모델(`melspectrogram.onnx`) 미다운로드로 `run.bat` 크래시
+  → `openwakeword.utils.download_models()` 1회 실행으로 해결. 신규 기기 셋업 항목과 동일.
+- **봇 다중 인스턴스 사고**: 진단 중 띄운 봇들이 종료 안 돼 4개 동시 실행 → 같은 음성 채널
+  수신 분할로 STT 빈 transcript, GPU 경합으로 STT 0.75s→15s, CUE 2회 재생. 전부 종료로 해소.
+  교훈: 봇 재시작 전 항상 이전 python 프로세스 종료 확인.
+- **Notion 401 원인**: `.env`에 `NOTION_API_KEY` 미저장(IDE 저장 누락). 키가 비면
+  `config.yaml`의 `${NOTION_API_KEY}`가 글자 그대로 MCP에 전달돼 invalid token. 저장 후 해결.
+  통합 "OTTO"가 워크스페이스 100+ 객체 접근 확인.
+
+**강의노트 "3월 8일 버전만 읽힘" — 중복 DB 문제 (코드 버그 아님)**
+- 원인: 워크스페이스에 강의 DB가 둘. 살아있는 **"강의 노트"**(ds `33700100…`, `[과목] N주차` 형식)와
+  3월 8일에 멈춘 빈 껍데기 **"수업 노트 정리"**(ds `ee6550a9…`). 풀텍스트 검색이 옛 빈 항목을 집어옴.
+- 조치: 사용자가 구 DB 폐기. 시스템 프롬프트(`system_prompt_template.txt`)에 **Notion source routing**
+  추가 — 개인 메모→"빠른 메모"(`18d0ae87…`), 강의→"강의 노트"(`33700100…`)를 `API-query-data-source`로
+  직접 조회. 두 ds id는 메모리에도 기록([[otto-notion-data-sources]]).
+
+**TTS가 "voice response" 낭독 + 폭주 — parse 폴백 버그**
+- 원인: 강의 본문이 길어 최종 JSON 파싱 실패 → `parse_dual_response` 폴백이 `raw[:100]`(=`{"voice_response":…`)을
+  그대로 TTS로 넘김. 100자 한국어 ≈ 12~25s라 "너무 길고", 필드명 낭독되고, 100자에서 잘림.
+- 조치: ① 폴백을 `_decode_partial`로 voice 값만 구제→실패 시 안전 멘트(raw JSON 절대 미낭독),
+  ② `validate_voice_length`가 130자 초과 시 실제 절단, ③ 프롬프트에 "강의 본문 통째 낭독 금지,
+  voice는 2문장 이내 요약" 명시.
+
+**rate limit 429 (30,000 ITPM) — 판단 및 대응 결정**
+- 원인: 현재 **Tier 1 / Sonnet 4.x = 30,000 input tokens/분**. 연속 강의 질의 2턴에서 ① 툴 스키마
+  26개(Notion 22 verbose) ② 강의 본문 tool_result(100블록)가 tool-use 루프마다 누적 재전송
+  ③ 10턴 히스토리가 1분 안에 3만 토큰 초과.
+- 확인 사실(공식 문서): **Sonnet 4.x는 `cache_read_input_tokens`가 ITPM에 카운트 안 됨**(†는 Haiku 3.5뿐).
+  cache write·uncached input만 카운트. 현 프로바이더는 system에 cache_control → 렌더순 tools→system이라
+  **툴+시스템은 함께 캐시됨**. 비용나는 곳은 **uncached messages(강의 본문·히스토리)**.
+- **결정: 유료 티어 상향($40→Tier2, 450k ITPM) 대신 토큰 다이어트로 대응** (사용자 지시):
+  - **B. Notion 툴 화이트리스트** 22→5 (`API-post-search`, `API-query-data-source`,
+    `API-retrieve-a-data-source`, `API-get-block-children`, `API-retrieve-a-page`). config `allowed_tools`로 제어.
+  - **C. tool_result 길이 캡** (`tool_use.max_result_chars`, 기본 6000자). 강의 100블록 폭주 차단.
+  - **D. `history_turns` 10→6** — uncached 히스토리 꼬리 축소.
+  - 선행: **요청별 [USAGE] 로깅**(provider) + orchestrator/provider 로그를 `otto_events.log`에 연결.
+    cache_r이 0이면 캐시 미스, in이 크면 ITPM 위험 — 사후 진단 가능하게.
+
 #### 2026-06-05 — E2E 타임로그 + 슬립오토 제거 + 분기 통합 (master로 일원화)
 
 **E2E 타임로그 Discord 출력 (커밋 11f1667)**
