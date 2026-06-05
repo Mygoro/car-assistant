@@ -10,6 +10,7 @@ import re
 from collections import deque
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Awaitable, Optional
 
@@ -80,7 +81,15 @@ def build_system_prompt() -> str:
     template = template_path.read_text(encoding="utf-8")
     memory = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
 
-    return template.replace("{MEMORY_MD_INJECTION_POINT}", memory)
+    now_kst = datetime.now(timezone(timedelta(hours=9)))
+    weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
+    date_str = now_kst.strftime(f"%Y-%m-%d ({weekdays_ko[now_kst.weekday()]}요일)")
+
+    return (
+        template
+        .replace("{MEMORY_MD_INJECTION_POINT}", memory)
+        .replace("{CURRENT_DATETIME}", date_str)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -263,13 +272,18 @@ class Orchestrator:
         )
 
     async def _start_native(self):
-        from .native_tools.calendar import get_calendar_events
+        from .native_tools.calendar import (
+            get_calendar_events,
+            create_calendar_event,
+            update_calendar_event,
+            delete_calendar_event,
+        )
         from .native_tools.vehicle import get_vehicle_status
         from .native_tools.kakao import search_nearby_places, reverse_geocode
 
         self._register_native(
             name="get_calendar_events",
-            description="사용자의 Google Calendar 일정을 조회한다. 날짜 범위를 받아 해당 기간 일정 목록을 반환.",
+            description="Google Calendar 일정 조회. 결과 각 줄 앞의 [id]는 수정·삭제 시 event_id로 사용.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -279,6 +293,51 @@ class Orchestrator:
                 "required": ["start_date"],
             },
             fn=get_calendar_events,
+        )
+        self._register_native(
+            name="create_calendar_event",
+            description="Google Calendar 일정 생성.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "summary":     {"type": "string", "description": "일정 제목"},
+                    "start":       {"type": "string", "description": "시작 시각 ISO datetime, e.g. 2026-06-10T15:00:00"},
+                    "end":         {"type": "string", "description": "종료 시각 ISO datetime (생략 시 start + 1시간)"},
+                    "location":    {"type": "string", "description": "장소 (선택)"},
+                    "description": {"type": "string", "description": "메모 (선택)"},
+                },
+                "required": ["summary", "start"],
+            },
+            fn=create_calendar_event,
+        )
+        self._register_native(
+            name="update_calendar_event",
+            description="Google Calendar 일정 수정. event_id는 get_calendar_events 결과의 [id].",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "event_id":    {"type": "string", "description": "수정할 이벤트 ID"},
+                    "summary":     {"type": "string", "description": "새 제목 (선택)"},
+                    "start":       {"type": "string", "description": "새 시작 시각 ISO datetime (선택)"},
+                    "end":         {"type": "string", "description": "새 종료 시각 ISO datetime (선택)"},
+                    "location":    {"type": "string", "description": "새 장소 (선택)"},
+                    "description": {"type": "string", "description": "새 메모 (선택)"},
+                },
+                "required": ["event_id"],
+            },
+            fn=update_calendar_event,
+        )
+        self._register_native(
+            name="delete_calendar_event",
+            description="Google Calendar 일정 삭제. event_id는 get_calendar_events 결과의 [id].",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "event_id": {"type": "string", "description": "삭제할 이벤트 ID"},
+                },
+                "required": ["event_id"],
+            },
+            fn=delete_calendar_event,
         )
         self._register_native(
             name="get_vehicle_status",

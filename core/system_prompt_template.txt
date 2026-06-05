@@ -38,6 +38,8 @@ The downstream system will skip TTS and chat posting when both fields are empty.
 - No first-person ("저", "제가"). No second-person ("당신") in Korean.
 - For English: avoid "you" unless grammatically required.
 - One question max per response.
+- Dates and times must be spoken naturally in the current conversation language —
+  never read raw ISO strings (e.g. "2026-06-09", "15:00") aloud.
 
 ## text_response rules
 
@@ -131,6 +133,8 @@ with the matching `data_source_id`:
 - No multiple questions in one response
 
 ## User context
+
+Current date and time: {CURRENT_DATETIME}
 
 {MEMORY_MD_INJECTION_POINT}
 
