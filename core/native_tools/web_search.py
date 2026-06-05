@@ -7,12 +7,20 @@
 """
 import logging
 import os
+import re
+from urllib.parse import urlparse
 
 import httpx
 
 log = logging.getLogger(__name__)
 
 _BRAVE_BASE = "https://api.search.brave.com/res/v1/web/search"
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _clean(s: str) -> str:
+    """Brave가 강조용으로 넣는 <strong> 등 HTML 태그 제거 + 공백 정리."""
+    return _TAG_RE.sub("", s or "").strip()
 
 
 async def web_search(args: dict) -> str:
@@ -57,10 +65,11 @@ async def web_search(args: dict) -> str:
 
         lines = [f"'{query}' 웹 검색 결과:"]
         for r in results[:count]:
-            title = r.get("title", "").strip()
-            desc = (r.get("description") or "").strip()
-            url = r.get("url", "")
-            lines.append(f"- {title}: {desc} ({url})")
+            title = _clean(r.get("title", ""))
+            desc = _clean(r.get("description") or "")
+            domain = urlparse(r.get("url", "")).netloc
+            src = f" (출처: {domain})" if domain else ""
+            lines.append(f"- {title}: {desc}{src}")
         return "\n".join(lines)
 
     except httpx.HTTPStatusError as e:
