@@ -24,7 +24,7 @@ llm:
 intent_routing:
   "default": "anthropic/claude-sonnet-4-6"
   "trivial": "anthropic/claude-haiku-4-5"
-  "complex_reasoning": "anthropic/claude-opus-4-7"
+  "complex_reasoning": "anthropic/claude-sonnet-4-6"
   "offline_fallback": "ollama/qwen2.5:14b"
 
 tts:

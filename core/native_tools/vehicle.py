@@ -65,6 +65,8 @@ def _ensure_token() -> dict:
     new_tokens = resp.json()
     data["access_token"] = new_tokens["access_token"]
     data["expires_at"] = int(time.time()) + int(new_tokens.get("expires_in", 7200))
+    if new_tokens.get("refresh_token"):
+        data["refresh_token"] = new_tokens["refresh_token"]
     _save_token(data)
     return data
 
