@@ -16,23 +16,44 @@ Byunghun Kwon · 2022195171
 - **TTS 지연 최적화 완료** (2026-06-03) — optimize_streaming_latency + ffmpeg 버퍼 off + WebSocket overlap (코드 보존; bot은 voice-first 경로 사용)
 - **E2E 타임로그 + 슬립오토 제거 완료** (2026-06-05) — 타임로그 Discord 출력, 세션은 무응답 타임아웃으로만 종료(슬립오토 버그 동시 해소). warm 발화끝→첫소리 **~3.4s** 실측, 목표 충족.
 - **분기 통합 완료** (2026-06-05) — `feat/tts-latency-ws-overlap`(GPU+TTS)와 `master`(Phase 6)가 `1270302`에서 분기돼 있던 것을 master로 통합. **이후 master에서 작업.**
-- **Phase 6 진행 중** — MCP/native 툴 통합 코드 작성 완료 (2026-06-02), **런타임 연결 미검증**
-- **다음 작업**: Phase 6 런타임 검증 (`uv sync` → NOTION_API_KEY/KAKAO_REST_API_KEY 등록 → Calendar OAuth → 툴 호출 E2E) + Phase 6.5 차량 데이터 mock
+- **Phase 6 진행 중** — Notion·Calendar·Hyundai 연결 완료 (2026-06-05), KakaoMap 미연결
+- **다음 작업**: KakaoMap 연결 → E2E 통합 테스트
 - **개발 환경**: 데스크탑(NVIDIA RTX 5070 Ti) 이식 완료. 노트북은 CPU-only 개발용
 - **전시 일정**: **2026-06-09 전시**
 
 ---
 
-### ⚡ 다음 세션 시작 지점 (2026-06-02 이후)
+### ⚡ 다음 세션 시작 지점 (2026-06-05 이후)
 
-**최우선 — Phase 6 런타임 연결 검증 (코드는 완성, 외부 서비스 연결은 0건)**
+**KakaoMap → E2E 통합 테스트**
 
-1. `.env`에 `NOTION_API_KEY` 등록 → `uv run tools/chat_test.py` → `!tools` 커맨드로 등록 툴 확인 → `otto_events.log`에서 "MCP 'notion' 연결 완료" 확인
-2. `google_credentials.json`을 `core/native_tools/`에 복사 (lecture_notes automation 폴더에서 재사용 가능)
-3. Calendar OAuth 실행: `get_calendar_events()` 첫 호출 → 브라우저 인증 → `core/native_tools/calendar_token.json` 저장 확인
-4. "내일 일정 뭐야?" 발화 테스트 → filler 재생 + Calendar 응답 확인
-5. "기름 얼마 남았어?" 발화 테스트 → vehicle stub 응답 확인
-6. (선택) `KAKAO_REST_API_KEY` 발급·등록 — 미등록 시 stub 응답
+1. `KAKAO_REST_API_KEY` `.env` 등록
+2. `kakao.py` 실구현 (`search_nearby_places`, `reverse_geocode`)
+3. E2E 통합 테스트 (Notion + Calendar + Hyundai + KakaoMap 전부)
+
+---
+
+### 2026-06-05 작업 로그 (Hyundai)
+
+- `tools/hyundai_auth.py` 구현 — OAuth 4단계 자동화 (로그인→auth code→token→carlist), localhost:8080 임시 서버로 redirect 캐치
+- 포털 설정: 계정 API / 데이터 API Redirect URL 등록, CLIENT_ID/SECRET .env 등록
+- 개인정보 동의: 포털 차량 활성화 시점에 이미 완료 상태 → step3 자동 통과
+- `core/native_tools/vehicle.py` 실구현 — 공식 Developers API (DTE + Odometer), token 자동 갱신
+- **미제공 데이터 조사**: 연료 잔량 % / GPS 위치 — 공식 API 미지원, 한국 계정용 Python 비공식 라이브러리 없음 (hyundai-kia-connect-api v4.x 한국 미지원 확인)
+
+---
+
+### 이전 시작 지점 (2026-06-05 오전) — 처리됨
+
+**Notion + Calendar 연결 완료 (2026-06-05)**
+
+- Notion: API key 연결, 화이트리스트 5개 툴, 소스 라우팅(빠른메모/강의노트 DB ID 고정)
+- Rate limit(429) 대응: 툴 22→5 화이트리스트(B), 결과 6000자 캡(C), 히스토리 10→6턴(D)
+- parse_dual_response 폴백 버그 수정 (raw JSON → TTS 낭독 사고 방지)
+- Calendar: Google Calendar API 활성화, OAuth read+write 스코프로 연결
+  - create / update / delete / get 4종 모두 구현, event_id 반환으로 수정·삭제 연결
+  - end_date == start_date 공집합 버그 수정
+- 시스템 프롬프트: 현재 날짜 주입, 날짜 자연어 읽기 규칙, voice 청크 분할
 
 ---
 

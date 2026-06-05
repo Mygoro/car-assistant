@@ -341,7 +341,7 @@ class Orchestrator:
         )
         self._register_native(
             name="get_vehicle_status",
-            description="차량의 연료 잔여 주행거리(DTE), 누적 주행거리, 마지막 주차 위치를 조회.",
+            description="차량의 주행 가능 거리(DTE)와 누적 주행거리를 조회.",
             input_schema={"type": "object", "properties": {}},
             fn=get_vehicle_status,
         )
