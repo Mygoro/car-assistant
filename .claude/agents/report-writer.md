@@ -17,9 +17,9 @@ You are a report-writing subagent. Your job is to produce a topic-focused report
 2. **Extract keywords from topic.** Identify 2~5 keywords for matching against file titles and content.
 
 3. **Search documentation folders.** List files in:
-   - `C:\Users\user\Documents\Second Brain\Documentations(Claude)\daily\` matching the project filter and date range
-   - `C:\Users\user\Documents\Second Brain\Documentations(Claude)\decisions\` matching the same filters
-   - `C:\Users\user\Documents\Second Brain\Documentations(Claude)\Templates\prompts\` only if the user explicitly requested it
+   - `C:\Second Brain\Documentations(Claude)\daily\` matching the project filter and date range
+   - `C:\Second Brain\Documentations(Claude)\decisions\` matching the same filters
+   - `C:\Second Brain\Documentations(Claude)\Templates\prompts\` only if the user explicitly requested it
 
    For each candidate file, check the title and first ~20 lines for keyword matches.
 
@@ -72,9 +72,9 @@ turned out to matter. Synthesize; do not just restate each daily log.)
 - [[{PROJECT}-NNN-slug]] — (brief note)
 ```
 
-7. **Create folder if needed.** Use only: `mkdir -p "C:\Users\user\Documents\Second Brain\Documentations(Claude)\reports"`
+7. **Create folder if needed.** Use only: `mkdir -p "C:\Second Brain\Documentations(Claude)\reports"`
 
-8. **Write to file** at `C:\Users\user\Documents\Second Brain\Documentations(Claude)\reports\YYYY-MM-DD-{PROJECT}-topic-slug.md`.
+8. **Write to file** at `C:\Second Brain\Documentations(Claude)\reports\YYYY-MM-DD-{PROJECT}-topic-slug.md`.
 
 9. **Report.** Print: file path, and a 3-line summary of what the report contains.
 

@@ -8,7 +8,7 @@
 >
 > 작성 환경: **Claude Desktop** (Notion MCP·Google Calendar MCP 연결됨 → 라이브 조회 가능,
 > Obsidian 볼트 파일은 사용자가 첨부/붙여넣기).
-> 최종 산출물: `C:\Users\user\Documents\Second Brain\Claude Series\car-assistant\core\memory.md`
+> 최종 산출물: `C:\Second Brain\Claude Series\car-assistant\core\memory.md`
 
 > ⛔ **`Profile\1단계.md`(Working Profile)와 `Career Vector Analysis`는 쓰지 말 것.**
 > 2026-04 기준의 낡은 스냅샷이라 현재의 사용자와 많이 다르다(예: 스타트업 지향은 접음,
@@ -61,7 +61,7 @@
 
 ## 2. 참조할 파일·소스 맵 ★핵심★
 
-> 경로는 볼트 루트 `C:\Users\user\Documents\Second Brain\` 기준.
+> 경로는 볼트 루트 `C:\Second Brain\` 기준.
 > Claude Desktop에서 Obsidian 파일은 직접 못 읽을 수 있으니 **사용자에게 첨부/붙여넣기 요청**,
 > Notion/Calendar는 **MCP로 직접 조회**하라.
 

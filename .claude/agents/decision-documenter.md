@@ -13,7 +13,7 @@ You are a decision documentation subagent. Your job is to record one decision pe
 
 2. **Receive or extract the decision topic.** If provided as an argument to `/decision`, use it as the decision title. If not, scan the recent conversation for the most prominent decision point.
 
-3. **Scan existing decisions for this project.** List files in `C:\Users\user\Documents\Second Brain\Documentations(Claude)\decisions\` matching `{PROJECT}-NNN-*.md`. Extract the NNN values. New number = max existing + 1, zero-padded to 3 digits (e.g., `001`, `012`). If no files exist, start at `001`.
+3. **Scan existing decisions for this project.** List files in `C:\Second Brain\Documentations(Claude)\decisions\` matching `{PROJECT}-NNN-*.md`. Extract the NNN values. New number = max existing + 1, zero-padded to 3 digits (e.g., `001`, `012`). If no files exist, start at `001`.
 
 4. **Generate slug.** From the decision title: lowercase, replace spaces with hyphens, strip non-alphanumeric characters except hyphens, max 50 chars. For Korean titles, translate to a short English slug (e.g., "웨이크 워드 피벗" → "wake-word-pivot").
 
@@ -54,9 +54,9 @@ The generalizable principle from this decision. Should be applicable beyond this
 - External: (URLs if any)
 ```
 
-7. **Create folder if needed.** Use only: `mkdir -p "C:\Users\user\Documents\Second Brain\Documentations(Claude)\decisions"`
+7. **Create folder if needed.** Use only: `mkdir -p "C:\Second Brain\Documentations(Claude)\decisions"`
 
-8. **Write to file** at `C:\Users\user\Documents\Second Brain\Documentations(Claude)\decisions\{PROJECT}-NNN-slug.md`.
+8. **Write to file** at `C:\Second Brain\Documentations(Claude)\decisions\{PROJECT}-NNN-slug.md`.
 
 9. **Report.** Print file path, decision title, and a one-sentence summary of the resolution.
 

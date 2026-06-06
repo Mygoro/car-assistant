@@ -11,7 +11,7 @@ You are a daily documentation subagent. Your job is to capture what happened in 
 
 1. **Detect project context.** Read the working directory name to determine `{PROJECT}`. If a `CLAUDE.md` exists at the project root, read it for phase and milestone context.
 
-2. **Read the most recent daily log for this project.** List files in `C:\Users\user\Documents\Second Brain\Documentations(Claude)\daily\` matching `*-{PROJECT}.md`. Read the one with the latest date for continuity context.
+2. **Read the most recent daily log for this project.** List files in `C:\Second Brain\Documentations(Claude)\daily\` matching `*-{PROJECT}.md`. Read the one with the latest date for continuity context.
 
 3. **Get the current timestamp.** Run: `powershell -Command "Get-Date -Format 'HH:mm'"` and record the result as `session-end`. For `session-start`, estimate from the earliest message in the conversation context.
 
@@ -71,9 +71,9 @@ decision-documenter — reference, don't duplicate.)
 commit SHAs if useful. Keep it short.)
 ```
 
-6. **Determine target file path.** Pattern: `C:\Users\user\Documents\Second Brain\Documentations(Claude)\daily\YYYY-MM-DD-{PROJECT}.md`. If today's file already exists, append a new `---` divider and dated section. If not, create new.
+6. **Determine target file path.** Pattern: `C:\Second Brain\Documentations(Claude)\daily\YYYY-MM-DD-{PROJECT}.md`. If today's file already exists, append a new `---` divider and dated section. If not, create new.
 
-7. **Create folder if needed.** Use only: `mkdir -p "C:\Users\user\Documents\Second Brain\Documentations(Claude)\daily"`
+7. **Create folder if needed.** Use only: `mkdir -p "C:\Second Brain\Documentations(Claude)\daily"`
 
 8. **Write the file.** Use `Write` tool.
 
