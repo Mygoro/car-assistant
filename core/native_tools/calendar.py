@@ -65,6 +65,29 @@ def _to_kst(dt_str: str) -> datetime:
     return dt
 
 
+def _split_event_id(raw: str) -> tuple[str, str]:
+    """event_id에 캘린더가 'calId::eventId'로 실려 있으면 분리. 없으면 primary.
+
+    get_calendar_events가 공유 캘린더 일정에도 calId를 붙여 반환하므로,
+    수정·삭제 시 올바른 캘린더를 타겟할 수 있다.
+    """
+    if "::" in raw:
+        cid, eid = raw.split("::", 1)
+        return cid, eid
+    return "primary", raw
+
+
+def _personal_calendars(svc) -> list:
+    """구독형 공휴일 캘린더를 뺀 개인·공유 캘린더 목록. primary가 맨 앞.
+
+    primary를 앞에 둬, 같은 일정이 여러 캘린더에 겹칠 때 primary 사본을 남긴다
+    (수정·삭제가 메인 캘린더로 가도록)."""
+    items = svc.calendarList().list().execute().get("items", [])
+    cals = [c for c in items if not c["id"].endswith("holiday@group.v.calendar.google.com")]
+    cals.sort(key=lambda c: not c.get("primary", False))
+    return cals
+
+
 async def get_calendar_events(args: dict) -> str:
     """Google Calendar 일정 조회.
 
@@ -93,31 +116,38 @@ async def get_calendar_events(args: dict) -> str:
 
     def _fetch():
         svc = _build_service()
-        result = (
-            svc.events()
-            .list(
-                calendarId="primary",
-                timeMin=start_dt.isoformat(),
-                timeMax=end_dt.isoformat(),
-                singleEvents=True,
-                orderBy="startTime",
-                maxResults=20,
+        seen = set()  # (summary, start) — 공유로 겹친 같은 일정 중복 제거
+        rows = []     # (start, line)
+        for cal in _personal_calendars(svc):
+            cid = cal["id"]
+            result = (
+                svc.events()
+                .list(
+                    calendarId=cid,
+                    timeMin=start_dt.isoformat(),
+                    timeMax=end_dt.isoformat(),
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=20,
+                )
+                .execute()
             )
-            .execute()
-        )
-        items = result.get("items", [])
-        if not items:
-            return "해당 기간에 일정이 없습니다."
+            for ev in result.get("items", []):
+                start = ev["start"].get("dateTime", ev["start"].get("date", ""))
+                summary = ev.get("summary", "(제목 없음)")
+                key = (summary, start)
+                if key in seen:
+                    continue
+                seen.add(key)
+                location = ev.get("location", "")
+                loc_str = f" ({location})" if location else ""
+                ev_id = ev.get("id", "")
+                rows.append((start, f"- [{cid}::{ev_id}] {start}: {summary}{loc_str}"))
 
-        lines = []
-        for ev in items:
-            start = ev["start"].get("dateTime", ev["start"].get("date", ""))
-            summary = ev.get("summary", "(제목 없음)")
-            location = ev.get("location", "")
-            loc_str = f" ({location})" if location else ""
-            ev_id = ev.get("id", "")
-            lines.append(f"- [{ev_id}] {start}: {summary}{loc_str}")
-        return "\n".join(lines)
+        if not rows:
+            return "해당 기간에 일정이 없습니다."
+        rows.sort(key=lambda r: r[0])
+        return "\n".join(line for _, line in rows)
 
     try:
         return await asyncio.get_event_loop().run_in_executor(None, _fetch)
@@ -187,7 +217,8 @@ async def update_calendar_event(args: dict) -> str:
 
     def _update():
         svc = _build_service()
-        ev = svc.events().get(calendarId="primary", eventId=event_id).execute()
+        cid, eid = _split_event_id(event_id)
+        ev = svc.events().get(calendarId=cid, eventId=eid).execute()
 
         if args.get("summary"):
             ev["summary"] = args["summary"]
@@ -200,8 +231,8 @@ async def update_calendar_event(args: dict) -> str:
         if args.get("description"):
             ev["description"] = args["description"]
 
-        updated = svc.events().update(calendarId="primary", eventId=event_id, body=ev).execute()
-        return f"일정 수정 완료: [{updated['id']}] {updated['summary']} ({updated['start'].get('dateTime', '')})"
+        updated = svc.events().update(calendarId=cid, eventId=eid, body=ev).execute()
+        return f"일정 수정 완료: [{cid}::{updated['id']}] {updated['summary']} ({updated['start'].get('dateTime', '')})"
 
     try:
         return await asyncio.get_event_loop().run_in_executor(None, _update)
@@ -222,7 +253,8 @@ async def delete_calendar_event(args: dict) -> str:
 
     def _delete():
         svc = _build_service()
-        svc.events().delete(calendarId="primary", eventId=event_id).execute()
+        cid, eid = _split_event_id(event_id)
+        svc.events().delete(calendarId=cid, eventId=eid).execute()
         return f"일정 삭제 완료: {event_id}"
 
     try:
