@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import deque
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -438,7 +439,11 @@ class Orchestrator:
     async def _call_tool_safe(self, name: str, arguments: dict) -> str:
         handle = self._tools.get(name)
         if not handle:
+            log.warning("[TOOL] ✗ '%s' 미등록", name)
             return f"[Tool error: '{name}' 미등록]"
+        args_str = json.dumps(arguments, ensure_ascii=False)
+        log.info("[TOOL] ▶ %s %s", name, args_str[:300])
+        t0 = time.monotonic()
         try:
             if handle.kind == "mcp":
                 result = await asyncio.wait_for(
@@ -452,11 +457,14 @@ class Orchestrator:
                     handle.native_fn(arguments),
                     timeout=self._tool_timeout_s,
                 )
-            return self._truncate_result(name, out)
+            out = self._truncate_result(name, out)
+            log.info("[TOOL] ■ %s (%.2fs) → %s", name, time.monotonic() - t0, out[:300])
+            return out
         except asyncio.TimeoutError:
+            log.warning("[TOOL] ✗ %s timeout (%.2fs)", name, time.monotonic() - t0)
             return f"[Tool '{name}' timed out after {self._tool_timeout_s}s]"
         except Exception as e:
-            log.error("Tool '%s' error: %s", name, e)
+            log.error("[TOOL] ✗ %s error (%.2fs): %s", name, time.monotonic() - t0, e)
             return f"[Tool '{name}' error: {e}]"
 
     def _truncate_result(self, name: str, out) -> str:
@@ -617,6 +625,7 @@ class Orchestrator:
 
         for iteration in range(self._max_iterations):
             resp = await provider.complete(messages, tools)
+            log.info("[TOOL] iteration %d/%d stop_reason=%s", iteration + 1, self._max_iterations, resp.stop_reason)
 
             if resp.stop_reason == "tool_use":
                 # filler는 첫 툴 호출 시 1회만
@@ -632,9 +641,7 @@ class Orchestrator:
                 tool_results = []
                 for block in resp.content:
                     if block.type == "tool_use":
-                        log.info("Tool call: %s(%s)", block.name, block.input)
                         result = await self._call_tool_safe(block.name, block.input)
-                        log.info("Tool result: %s", result[:200])
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
