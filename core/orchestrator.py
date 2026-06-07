@@ -258,6 +258,23 @@ def _log_place_grounding(place_names: set[str], voice: str, text: str) -> None:
 # Intent classification
 # ---------------------------------------------------------------------------
 
+def _serialize_assistant_blocks(content) -> list[dict]:
+    """어시스턴트 content 블록을 API에 되돌려 보낼 수 있는 형태로 직렬화.
+
+    messages.stream().get_final_message()는 text 블록에 parsed_output 같은 부가 필드를
+    붙이는데, b.model_dump()로 통째 재전송하면 400(messages…text.parsed_output: Extra
+    inputs are not permitted)이 난다. 허용되는 필드만 남긴다(complete 경로도 동일 적용).
+    """
+    out: list[dict] = []
+    for b in content:
+        if b.type == "text":
+            out.append({"type": "text", "text": b.text})
+        elif b.type == "tool_use":
+            out.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+        # thinking 등 기타 블록은 재전송하지 않는다
+    return out
+
+
 def classify_intent(transcript: str) -> str:
     t = transcript.strip()
 
@@ -771,7 +788,7 @@ class Orchestrator:
                     filler_sent = True
 
                 # 어시스턴트 메시지 (tool_use 블록 포함) 누적
-                asst_blocks = [b.model_dump() for b in resp.content]
+                asst_blocks = _serialize_assistant_blocks(resp.content)
                 messages.append(Message("assistant", asst_blocks))
 
                 # 툴 호출 — 같은 iteration의 다중 tool_use는 병렬 실행(순서 보존)
@@ -852,7 +869,7 @@ class Orchestrator:
                 if not filler_sent:
                     yield "filler", "searching"
                     filler_sent = True
-                messages.append(Message("assistant", [b.model_dump() for b in final.content]))
+                messages.append(Message("assistant", _serialize_assistant_blocks(final.content)))
                 tu_blocks = [b for b in final.content if b.type == "tool_use"]
                 results = await asyncio.gather(
                     *(self._call_tool_safe(b.name, b.input) for b in tu_blocks)

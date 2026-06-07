@@ -90,8 +90,48 @@ def test_tool_iteration_then_final():
     print("OK tool_iteration_then_final")
 
 
+def test_serialize_strips_extra_fields():
+    """get_final_message()가 붙이는 parsed_output 등 부가필드를 제거해 400 방지."""
+    from core.orchestrator import _serialize_assistant_blocks
+    blocks = [
+        _Blk(type="text", text="일정 확인할게요", parsed_output={"x": 1}, citations=None),
+        _Blk(type="tool_use", id="t1", name="get_calendar_events", input={"a": 1}, extra="nope"),
+    ]
+    out = _serialize_assistant_blocks(blocks)
+    assert out == [
+        {"type": "text", "text": "일정 확인할게요"},
+        {"type": "tool_use", "id": "t1", "name": "get_calendar_events", "input": {"a": 1}},
+    ], out
+    print("OK serialize_strips_extra_fields")
+
+
+def test_tool_turn_with_leading_text():
+    """모델이 tool 호출 앞에 텍스트를 뱉는 턴(=400 유발 케이스)도 정상 진행."""
+    o = _orch()
+    async def fake_tool(args):
+        return "- 카몽: 서울 서초구\n"
+    from core.orchestrator import ToolHandle
+    o._tools["search_nearby_places"] = ToolHandle(
+        name="search_nearby_places",
+        schema={"name": "search_nearby_places", "description": "d", "input_schema": {}},
+        kind="native", native_fn=fake_tool,
+    )
+    tool_final = _Final("tool_use", [
+        _Blk(type="text", text="확인할게요", parsed_output={"v": 1}),
+        _Blk(type="tool_use", name="search_nearby_places", input={"query": "강남"}, id="t1"),
+    ])
+    raw = json.dumps({"voice_response": "카몽 추천해요", "text_response": "상세"}, ensure_ascii=False)
+    prov = _FakeProvider([("확인할게요", tool_final), (raw, _Final("end_turn", []))])
+    out = asyncio.run(_drain(o._tool_voice_streaming(prov, [Message("user", "q")], "q")))
+    stages = [s for s, _ in out]
+    assert stages == ["filler", "voice", "text"], stages
+    print("OK tool_turn_with_leading_text")
+
+
 if __name__ == "__main__":
     test_final_turn_voice_before_text()
     test_escaped_and_korean_voice()
     test_tool_iteration_then_final()
+    test_serialize_strips_extra_fields()
+    test_tool_turn_with_leading_text()
     print("ALL PASS")
