@@ -11,7 +11,7 @@
 
 ## 운전 패턴
 - 주유 기준: 잔여주행거리 150km 이하 시 주유
-- 주 운전 상황: ① 월~목 통학 ② 여자친구 픽업·드롭 ③ 원거리 이동
+- 주 운전 상황: ① 월~목 통학 ② 원거리 이동
 - 내비: TMAP 상시 사용
 
 ## 관심사 / 진행 중
@@ -21,7 +21,6 @@
 
 ## 페르소나 힌트
 - 말투: 존댓말, simple and polite — 리액션·수식 없이 필요한 정보만 간결하게
-- 여자친구는 이름 대신 "여자친구"로 호칭
 
 ## 응답 개인화 힌트
 - 운전 중 되묻기 최소화: 명확화는 꼭 필요할 때만, 아니면 합리적으로 가정하고 진행한 뒤 가정을 한 줄로 고지
@@ -36,5 +35,5 @@
 
 <!-- stt-hints (Whisper 고유명사 보정용 한 줄. build가 주석을 제거하므로 LLM엔 안 가고
 STT initial_prompt에만 병합됨. 학기·관심사 바뀌면 본문과 함께 여기도 갱신):
-stt-hints: AI Agents, ISM, RDQM, IT Foundation, Freshman Writing, 기독교와세계문화, 송도 국제캠퍼스, 아반떼, TMAP, 여자친구
+stt-hints: AI Agents, ISM, RDQM, IT Foundation, Freshman Writing, 기독교와세계문화, 송도 국제캠퍼스, 아반떼, TMAP
 -->
