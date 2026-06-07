@@ -55,3 +55,6 @@ tool_use:
   # C) tool_result 길이 캡. 강의 본문(100블록) 같은 거대 결과가 매 루프 iteration·히스토리에
   # uncached로 재전송되며 ITPM을 터뜨리는 것을 차단. 요약엔 앞부분이면 충분.
   max_result_chars: 6000
+  # 티어2: 최종 답변 turn을 스트리밍해 voice를 긴 text 기다리지 않고 즉시 발화(지연 절감).
+  # 불안정하면 false로 두면 기존 complete 경로로 즉시 강등.
+  stream_final: true

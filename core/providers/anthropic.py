@@ -70,3 +70,22 @@ class AnthropicProvider:
         resp = await self._client.messages.create(**self._build_kwargs(messages, tools))
         _log_usage("complete", resp.usage)
         return resp
+
+    async def stream_tools(self, messages: list[Message], tools: list[dict]):
+        """tool 지원 스트리밍 — text_delta를 즉시 흘리고, 끝에 ('final', message) 1회.
+
+        complete()와 달리 텍스트 토큰을 생성 즉시 방출해, 최종 답변의 voice_response가
+        닫히는 순간 긴 text_response를 기다리지 않고 TTS를 시작할 수 있게 한다.
+        final.content에 tool_use 블록·final.stop_reason 포함 → tool 루프가 그대로 사용.
+
+        Yields:
+            ('text_delta', str)              — 생성되는 텍스트 조각
+            ('final', _anthropic.types.Message) — 턴 완성(stop_reason + content)
+        """
+        async with self._client.messages.stream(**self._build_kwargs(messages, tools)) as s:
+            async for ev in s:
+                if ev.type == "content_block_delta" and getattr(ev.delta, "type", None) == "text_delta":
+                    yield ("text_delta", ev.delta.text)
+            final = await s.get_final_message()
+        _log_usage("stream_tools", final.usage)
+        yield ("final", final)

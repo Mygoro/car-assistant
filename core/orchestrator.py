@@ -294,6 +294,9 @@ class Orchestrator:
         self._max_iterations = tool_cfg.get("max_iterations", 5)
         self._tool_timeout_s = tool_cfg.get("tool_timeout_s", 15)
         self._max_result_chars = tool_cfg.get("max_result_chars", 6000)
+        # 티어2: 최종 답변 turn을 스트리밍해 voice를 긴 text 기다리지 않고 방출.
+        # 불안정 시 false로 두면 즉시 기존 complete 경로로 강등.
+        self._stream_final = tool_cfg.get("stream_final", True)
 
     # ------------------------------------------------------------------
     # 시작 / 종료
@@ -613,6 +616,23 @@ class Orchestrator:
             return
 
         # 툴 사용 경로
+        if self._stream_final:
+            voice_emitted = False
+            try:
+                async for stage, content in self._tool_voice_streaming(provider, messages, transcript):
+                    if stage == "voice":
+                        voice_emitted = True
+                    yield stage, content
+                return
+            except Exception as e:
+                log.warning("스트리밍 tool 경로 예외 — complete 폴백: %s", e)
+                if voice_emitted:
+                    # 이미 발화 시작 → 중복 발화 방지. 깨진 부분만 채팅으로.
+                    yield "text", f"[스트리밍 오류: {e}]"
+                    return
+                # voice 방출 전 실패 → 메시지를 새로 구성해 complete 경로로 폴백
+                messages = self._build_messages(transcript)
+
         async for stage, content in self._tool_voice_first(provider, messages, transcript):
             yield stage, content
 
@@ -771,6 +791,79 @@ class Orchestrator:
 
         # max_iterations 초과
         log.error("Tool loop exceeded max_iterations=%d", self._max_iterations)
+        yield "voice", "처리 중 문제가 생겼어요."
+        yield "text", f"[Error] tool_use loop exceeded {self._max_iterations} iterations"
+
+    # ------------------------------------------------------------------
+    # 툴 루프 경로 (티어2: 최종 turn 스트리밍)
+    # ------------------------------------------------------------------
+
+    async def _tool_voice_streaming(self, provider, messages: list[Message], original_transcript: str):
+        """tool 루프를 스트리밍으로 돈다. 최종 답변 turn에서 voice_response 값이 닫히는
+        즉시 'voice'를 방출해 긴 text_response 생성을 기다리지 않는다(체감 지연 절감).
+
+        tool turn은 프롬프트 규칙상 JSON(voice_response)을 내지 않으므로 발화되지 않는다.
+        bot은 기존 'voice'/'text'/'filler' 단계만 소비하면 된다(배선 무변경).
+        """
+        tools = self._all_schemas()
+        filler_sent = False
+        place_names: set[str] = set()
+
+        for iteration in range(self._max_iterations):
+            buffer = ""
+            voice_emitted = False
+            final = None
+
+            async for kind, payload in provider.stream_tools(messages, tools):
+                if kind == "text_delta":
+                    buffer += payload
+                    if not voice_emitted:
+                        m = _VOICE_START_RE.search(buffer)
+                        if m:
+                            tail = buffer[m.end():]
+                            end = _find_value_end(tail)
+                            if end >= 0:        # voice_response 값이 닫힘 → 즉시 발화
+                                voice = validate_voice_length(_decode_partial(tail[:end]))
+                                voice_emitted = True
+                                yield "voice", voice
+                else:                            # ('final', message)
+                    final = payload
+
+            log.info("[TOOL] iteration %d/%d stop_reason=%s",
+                     iteration + 1, self._max_iterations, final.stop_reason)
+
+            if final.stop_reason == "tool_use":
+                if not filler_sent:
+                    yield "filler", "searching"
+                    filler_sent = True
+                messages.append(Message("assistant", [b.model_dump() for b in final.content]))
+                tu_blocks = [b for b in final.content if b.type == "tool_use"]
+                results = await asyncio.gather(
+                    *(self._call_tool_safe(b.name, b.input) for b in tu_blocks)
+                )
+                tool_results = []
+                for block, result in zip(tu_blocks, results):
+                    if block.name in _PLACE_TOOLS:
+                        place_names |= _extract_place_names(block.name, result)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
+                    })
+                messages.append(Message("user", tool_results))
+                continue
+
+            # 최종 답변 turn
+            voice_full, text = parse_dual_response(buffer)
+            if not voice_emitted:                # 스트림 중 voice를 못 닫았으면 폴백 방출
+                yield "voice", validate_voice_length(voice_full)
+            _log_place_grounding(place_names, voice_full or "", text)
+            self._push_history(Message("user", original_transcript))
+            self._push_history(Message("assistant", buffer))
+            yield "text", text
+            return
+
+        log.error("Tool loop exceeded max_iterations=%d (streaming)", self._max_iterations)
         yield "voice", "처리 중 문제가 생겼어요."
         yield "text", f"[Error] tool_use loop exceeded {self._max_iterations} iterations"
 
