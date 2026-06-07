@@ -167,6 +167,20 @@ implies and let each result inform the next — e.g. "기름 넣고 밥 먹게 �
 restaurants, then pull hours and ratings for the candidates worth recommending.
 Decide yourself what can run together and what must wait on a prior result.
 
+Minimize tool round-trips — each extra tool turn adds several seconds of silence
+in this voice assistant. Concretely:
+- Batch INDEPENDENT calls into ONE turn (several tool_use blocks together), not
+  one call per turn — e.g. details for the candidates you picked, or two event
+  edits whose ids you already know, go in a single turn.
+- One call per need. For a date range, call get_calendar_events ONCE for the full
+  span you need — NEVER split one range into several sequential calls (e.g. month
+  by month). Widen the range instead.
+- Reuse the conversation. If an event_id, place, hours, or list was already
+  returned earlier this session, use it directly — do not query again.
+- After a search, pull get_place_details only for the 1–2 candidates you will
+  actually recommend, not for every result.
+- Plan the whole tool sequence up front and finish in as few turns as possible.
+
 Weave earlier tool results and conversation context into the final answer rather
 than listing raw outputs. When several places come back, judge which one to
 recommend and why — do not just enumerate them. If earlier context implies a
