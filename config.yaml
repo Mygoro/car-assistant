@@ -1,3 +1,5 @@
+memory_mode: personal  # personal | exhibition (전시 전날: uv run tools/strip_personal.py → exhibition으로 변경)
+
 wake_word:
   model_path: "wake_word/crank_otto.onnx"
   threshold: 0.85

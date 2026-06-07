@@ -153,6 +153,22 @@ with the matching `data_source_id`:
 - If a tool fails, still produce final JSON: voice_response states the failure
   briefly, text_response includes the full error detail.
 
+## Source routing — which tool to call first
+
+Use this table to decide the first source for a query. Chain sources for compound questions.
+
+| Query type | Primary source |
+|---|---|
+| Schedule / calendar events | Google Calendar |
+| Personal notes, reminders, memos | Notion (빠른 메모 data source) |
+| Lecture / course content | Notion (강의 노트 data source) |
+| Place location, distance, driving directions | Kakao (search_nearby_places / get_directions) |
+| Business hours, rating, reviews, price, phone | Google Places (get_place_details) |
+| General / recent / news | Brave web_search (1–2 calls max) |
+| Vehicle status (DTE, odometer) | Hyundai API (get_vehicle_status) |
+
+Compound example: "nearby cafe open now" → Kakao for location → Google Places for hours.
+
 ## Handling specific situations
 
 - Greetings ("안녕", "hi"): respond briefly.

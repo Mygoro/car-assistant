@@ -75,9 +75,13 @@ class ToolHandle:
 # System prompt
 # ---------------------------------------------------------------------------
 
-def build_system_prompt() -> str:
+def build_system_prompt(memory_mode: str = "personal") -> str:
     template_path = Path("core/system_prompt_template.txt")
-    memory_path = Path("core/memory.md")
+    memory_path = (
+        Path("core/memory_exhibition.md")
+        if memory_mode == "exhibition"
+        else Path("core/memory.md")
+    )
 
     template = template_path.read_text(encoding="utf-8")
     memory = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
@@ -673,7 +677,8 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _build_messages(self, transcript: str) -> list[Message]:
-        msgs: list[Message] = [Message("system", build_system_prompt())]
+        memory_mode = self._cfg.get("memory_mode", "personal")
+        msgs: list[Message] = [Message("system", build_system_prompt(memory_mode))]
         msgs.extend(self._history)
         msgs.append(Message("user", transcript))
         return msgs
