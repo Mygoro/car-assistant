@@ -75,16 +75,47 @@ class ToolHandle:
 # System prompt
 # ---------------------------------------------------------------------------
 
-def build_system_prompt(memory_mode: str = "personal") -> str:
-    template_path = Path("core/system_prompt_template.txt")
-    memory_path = (
-        Path("core/memory_exhibition.md")
-        if memory_mode == "exhibition"
-        else Path("core/memory.md")
-    )
+# memory.md 로딩 — 프로파일 게이팅 + 민감정보 오버레이
+#   core/memory.md        : 커밋되는 비민감 베이스 컨텍스트
+#   core/memory.local.md  : gitignore되는 민감 오버레이([개인전용]) — personal에서만 로드
+#   OTTO_PROFILE=exhibition: 오버레이 미로드 + [개인전용] 줄 제거(안전망)
+# HTML 주석(유지보수 메모)은 어느 프로파일에서든 모델에 주입하지 않는다.
+_PRIVATE_TAG = "[개인전용]"
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
-    template = template_path.read_text(encoding="utf-8")
-    memory = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
+
+def _active_profile() -> str:
+    """실행 프로파일. env OTTO_PROFILE 우선, 없으면 'personal'."""
+    return (os.environ.get("OTTO_PROFILE") or "personal").strip().lower()
+
+
+def _load_memory() -> str:
+    """베이스(+개인 오버레이)를 합쳐 주입용 메모리 텍스트를 만든다.
+
+    전시(exhibition) 프로파일에서는 민감 정보가 절대 새지 않도록 오버레이 파일을
+    읽지 않고, [개인전용] 태그가 붙은 줄을 안전망으로 한 번 더 제거한다.
+    """
+    exhibition = _active_profile() == "exhibition"
+
+    parts: list[str] = []
+    base = Path("core/memory.md")
+    if base.exists():
+        parts.append(base.read_text(encoding="utf-8"))
+    overlay = Path("core/memory.local.md")
+    if overlay.exists() and not exhibition:
+        parts.append(overlay.read_text(encoding="utf-8"))
+
+    text = _HTML_COMMENT_RE.sub("", "\n".join(parts))
+
+    if exhibition:
+        text = "\n".join(l for l in text.splitlines() if _PRIVATE_TAG not in l)
+
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def build_system_prompt() -> str:
+    template = Path("core/system_prompt_template.txt").read_text(encoding="utf-8")
+    memory = _load_memory()
 
     now_kst = datetime.now(timezone(timedelta(hours=9)))
     weekdays_ko = ["월", "화", "수", "목", "금", "토", "일"]
@@ -677,8 +708,7 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _build_messages(self, transcript: str) -> list[Message]:
-        memory_mode = self._cfg.get("memory_mode", "personal")
-        msgs: list[Message] = [Message("system", build_system_prompt(memory_mode))]
+        msgs: list[Message] = [Message("system", build_system_prompt())]
         msgs.extend(self._history)
         msgs.append(Message("user", transcript))
         return msgs

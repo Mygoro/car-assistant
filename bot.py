@@ -509,4 +509,26 @@ async def _main():
     finally:
         await orchestrator.aclose()
 
-asyncio.run(_main())
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="car-assistant 봇")
+    parser.add_argument(
+        "--profile",
+        choices=["personal", "exhibition"],
+        default=os.environ.get("OTTO_PROFILE", "personal"),
+        help="personal=민감 오버레이(core/memory.local.md) 주입, "
+             "exhibition=민감정보 차단(오버레이 미로드 + [개인전용] 제거)",
+    )
+    args = parser.parse_args()
+    # build_system_prompt()가 매 턴 os.environ["OTTO_PROFILE"]을 읽는다.
+    os.environ["OTTO_PROFILE"] = args.profile
+
+    banner = ("전시 모드 — 민감정보 차단" if args.profile == "exhibition"
+              else "개인 모드 — 민감 오버레이 주입")
+    logging.warning("=" * 52)
+    logging.warning("  OTTO_PROFILE = %s  (%s)", args.profile, banner)
+    logging.warning("=" * 52)
+
+    asyncio.run(_main())
