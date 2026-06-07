@@ -198,6 +198,50 @@ def validate_voice_length(voice: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tool result grounding (관측 전용) — 장소 환각 가시화
+# ---------------------------------------------------------------------------
+# 장소 tool이 돌려준 place_name을 모아두고, 최종 응답이 그 이름을 얼마나 인용했는지
+# 로그로 남긴다. 응답을 차단하지 않는다(오탐이 데모를 망치는 것 방지) — 리허설에서
+# 환각 패턴을 가시화해 프롬프트로 교정하는 용도. 결과 포맷은 우리가 만든 것이라 정확히 파싱.
+_PLACE_TOOLS = {"search_nearby_places", "get_place_details"}
+
+
+def _extract_place_names(tool_name: str, result: str) -> set[str]:
+    """장소 tool 결과 문자열에서 place_name 집합 추출."""
+    names: set[str] = set()
+    if not result or result.startswith("["):   # 에러/stub 응답 제외
+        return names
+    if tool_name == "search_nearby_places":
+        # "- {name}: {addr} ({dist}m)" 형식
+        for line in result.splitlines():
+            line = line.strip()
+            if line.startswith("- ") and ": " in line:
+                names.add(line[2:].split(":", 1)[0].strip())
+    elif tool_name == "get_place_details":
+        # 첫 줄이 장소명
+        lines = result.splitlines()
+        if lines and lines[0].strip():
+            names.add(lines[0].strip())
+    return {n for n in names if n}
+
+
+def _log_place_grounding(place_names: set[str], voice: str, text: str) -> None:
+    """장소 tool이 돌았는데 응답이 그 이름을 인용했는지 관측 로그. 차단하지 않음."""
+    if not place_names:
+        return
+    answer = f"{voice} {text}"
+    cited = [n for n in place_names if n in answer]
+    if cited:
+        log.info("[GROUND] 장소 %d개 중 응답 인용 %d개", len(place_names), len(cited))
+    else:
+        log.warning(
+            "[GROUND] 장소 tool 결과 %d개를 응답이 하나도 인용 안 함 — 환각 의심. "
+            "결과: %s | voice: %s",
+            len(place_names), sorted(place_names)[:5], voice[:80],
+        )
+
+
+# ---------------------------------------------------------------------------
 # Intent classification
 # ---------------------------------------------------------------------------
 
@@ -678,6 +722,7 @@ class Orchestrator:
     async def _tool_voice_first(self, provider, messages: list[Message], original_transcript: str):
         tools = self._all_schemas()
         filler_sent = False
+        place_names: set[str] = set()   # 장소 tool이 돌려준 이름들(grounding 관측용)
 
         for iteration in range(self._max_iterations):
             resp = await provider.complete(messages, tools)
@@ -698,6 +743,8 @@ class Orchestrator:
                 for block in resp.content:
                     if block.type == "tool_use":
                         result = await self._call_tool_safe(block.name, block.input)
+                        if block.name in _PLACE_TOOLS:
+                            place_names |= _extract_place_names(block.name, result)
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
@@ -711,6 +758,7 @@ class Orchestrator:
                 raw = "".join(b.text for b in resp.content if b.type == "text")
                 voice, text = parse_dual_response(raw)
                 voice = validate_voice_length(voice)
+                _log_place_grounding(place_names, voice, text)
 
                 self._push_history(Message("user", original_transcript))
                 self._push_history(Message("assistant", raw))
