@@ -152,9 +152,21 @@ def build_system_prompt() -> str:
 # 절대 raw JSON을 TTS로 흘려보내지 않기 위함(필드명·구조가 그대로 낭독되는 사고 방지).
 _SAFE_VOICE_FALLBACK = "응답을 처리하다 문제가 생겼어요. 다시 한 번 말씀해 주실래요?"
 
-# voice_response 하드 상한. 프롬프트 목표는 1~2문장(50~100자)이며,
-# 약간의 초과는 허용하되 폭주(수백 자 → 수십 초 낭독)는 여기서 차단한다.
-_VOICE_MAX_CHARS = 130
+# voice_response 길이 상한. 평소엔 1~2문장으로 절제(_VOICE_MAX_CHARS).
+# 단 "이번주 일정"처럼 본질적으로 나열형인 답은 130자로는 죽으므로 상한을 다소 높였다.
+# 사용자가 "전부/길게/자세히"를 명시하면 _VOICE_MAX_CHARS_FULL까지 풀어 폭주만 막는다.
+_VOICE_MAX_CHARS = 200
+_VOICE_MAX_CHARS_FULL = 1200
+
+# 사용자가 "전부 말해줘" 류로 전체를 명시 요청하는지 — voice 길이 컷 해제 트리거.
+_FULL_KEYWORDS = (
+    "전부", "모두", "길게", "자세히", "마저", "빠짐없이", "낱낱이", "풀어서",
+    "다 들려", "다 말", "다 알려", "다 보여", "다 읽", "하나도",
+)
+
+
+def _wants_full(transcript: str) -> bool:
+    return any(k in transcript for k in _FULL_KEYWORDS)
 
 
 def parse_dual_response(raw: str) -> tuple[str, str]:
@@ -185,11 +197,12 @@ def parse_dual_response(raw: str) -> tuple[str, str]:
         return _SAFE_VOICE_FALLBACK, raw
 
 
-def validate_voice_length(voice: str) -> str:
-    if len(voice) <= _VOICE_MAX_CHARS:
+def validate_voice_length(voice: str, allow_long: bool = False) -> str:
+    limit = _VOICE_MAX_CHARS_FULL if allow_long else _VOICE_MAX_CHARS
+    if len(voice) <= limit:
         return voice
-    log.warning("voice_response %d자 초과 — 잘라냄: %s...", len(voice), voice[:60])
-    head = voice[:_VOICE_MAX_CHARS]
+    log.warning("voice_response %d자 초과(limit=%d) — 잘라냄: %s...", len(voice), limit, voice[:60])
+    head = voice[:limit]
     # 상한 이내의 마지막 문장 종결부호에서 자른다.
     cut = max(head.rfind("."), head.rfind("!"), head.rfind("?"), head.rfind("。"))
     if cut >= 40:                       # 너무 앞에서 잘려 내용이 사라지는 것 방지
@@ -273,6 +286,7 @@ class Orchestrator:
         self._routing: dict[str, str] = cfg.get("intent_routing", {})
 
         self._history: deque[Message] = deque()
+        self._turn_full = False   # 이번 턴에 "전부/길게" 요청이 있었는지(voice 컷 해제)
 
         self._anthropic = AnthropicProvider(
             api_key=anthropic_api_key,
@@ -605,7 +619,8 @@ class Orchestrator:
 
         intent = classify_intent(transcript)
         provider = self._get_provider(intent)
-        log.info("Intent: %s | model: %s", intent, provider.model)
+        self._turn_full = _wants_full(transcript)
+        log.info("Intent: %s | model: %s | full=%s", intent, provider.model, self._turn_full)
         messages = self._build_messages(transcript)
 
         # trivial이거나 툴 없으면 기존 스트리밍 경로 (TTS 지연 최소)
@@ -654,14 +669,14 @@ class Orchestrator:
                             voice = json.loads(f'"{m.group(1)}"')
                         except json.JSONDecodeError:
                             voice = m.group(1)
-                        voice = validate_voice_length(voice)
+                        voice = validate_voice_length(voice, self._turn_full)
                         voice_emitted = True
                         yield "voice", voice
 
         voice_full, text = parse_dual_response(buffer)
 
         if not voice_emitted:
-            yield "voice", validate_voice_length(voice_full)
+            yield "voice", validate_voice_length(voice_full, self._turn_full)
 
         if voice_full or text:
             self._push_history(Message("assistant", buffer))
@@ -689,7 +704,8 @@ class Orchestrator:
 
         intent = classify_intent(transcript)
         provider = self._get_provider(intent)
-        log.info("Intent: %s | model: %s", intent, provider.model)
+        self._turn_full = _wants_full(transcript)
+        log.info("Intent: %s | model: %s | full=%s", intent, provider.model, self._turn_full)
         messages = self._build_messages(transcript)
 
         buffer = ""
@@ -726,7 +742,7 @@ class Orchestrator:
         voice_full, text = parse_dual_response(buffer)
         if not voice_ended:
             if emitted == 0 and voice_full:
-                yield "voice_chunk", validate_voice_length(voice_full)
+                yield "voice_chunk", validate_voice_length(voice_full, self._turn_full)
             yield "voice_end", ""
 
         if voice_full or text:
@@ -779,7 +795,7 @@ class Orchestrator:
                 # 최종 텍스트 응답
                 raw = "".join(b.text for b in resp.content if b.type == "text")
                 voice, text = parse_dual_response(raw)
-                voice = validate_voice_length(voice)
+                voice = validate_voice_length(voice, self._turn_full)
                 _log_place_grounding(place_names, voice, text)
 
                 self._push_history(Message("user", original_transcript))
@@ -823,7 +839,7 @@ class Orchestrator:
                             tail = buffer[m.end():]
                             end = _find_value_end(tail)
                             if end >= 0:        # voice_response 값이 닫힘 → 즉시 발화
-                                voice = validate_voice_length(_decode_partial(tail[:end]))
+                                voice = validate_voice_length(_decode_partial(tail[:end]), self._turn_full)
                                 voice_emitted = True
                                 yield "voice", voice
                 else:                            # ('final', message)
@@ -856,7 +872,7 @@ class Orchestrator:
             # 최종 답변 turn
             voice_full, text = parse_dual_response(buffer)
             if not voice_emitted:                # 스트림 중 voice를 못 닫았으면 폴백 방출
-                yield "voice", validate_voice_length(voice_full)
+                yield "voice", validate_voice_length(voice_full, self._turn_full)
             _log_place_grounding(place_names, voice_full or "", text)
             self._push_history(Message("user", original_transcript))
             self._push_history(Message("assistant", buffer))
