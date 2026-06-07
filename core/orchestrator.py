@@ -144,6 +144,11 @@ _VOICE_MAX_CHARS = 130
 def parse_dual_response(raw: str) -> tuple[str, str]:
     try:
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.DOTALL)
+        # 모델이 JSON 앞뒤에 prose를 붙이는 경우(예: "월요일 일정 등록할까요?\n\n{...}")
+        # 대비: 첫 '{'부터 마지막 '}'까지 객체 본체만 추출해 파싱한다.
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start != -1 and end > start:
+            cleaned = cleaned[start:end + 1]
         obj = json.loads(cleaned)
         voice = obj.get("voice_response", "")
         text = obj.get("text_response", "")
