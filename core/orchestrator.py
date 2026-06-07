@@ -485,15 +485,16 @@ class Orchestrator:
         self._register_native(
             name="search_nearby_places",
             description=(
-                "장소 검색. 주유소, 충전소, 맛집 등. 좌표(lon/lat)는 선택 — "
-                "좌표를 모르면 지역명을 query에 넣어 검색(예: query='강남역 주유소')."
+                "장소 검색. 주유소, 충전소, 맛집 등. '근처/여기' 같은 현재 위치 기준이면 "
+                "좌표를 비워도 됨 — 봇이 폰 GPS로 자동 채운다. 특정 지역이면 query에 지역명 "
+                "포함(예: query='강남역 주유소')."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "검색어. 좌표가 없으면 지역명 포함, e.g. '강남역 주유소'"},
-                    "lon": {"type": "number", "description": "경도 (선택)"},
-                    "lat": {"type": "number", "description": "위도 (선택)"},
+                    "query": {"type": "string", "description": "검색어. 특정 지역이면 지역명 포함, '근처'는 현재 위치 자동"},
+                    "lon": {"type": "number", "description": "경도 (선택, 생략 시 현재 GPS)"},
+                    "lat": {"type": "number", "description": "위도 (선택, 생략 시 현재 GPS)"},
                     "radius_m": {"type": "integer", "description": "검색 반경 미터 (기본 5000, 좌표 있을 때만)"},
                 },
                 "required": ["query"],
@@ -504,18 +505,19 @@ class Orchestrator:
             name="get_directions",
             description=(
                 "자동차 길찾기. 출발지→목적지 소요시간/거리/통행료 조회. "
-                "지명만 주면 됨(GPS 불필요), e.g. origin='강남역', destination='잠실역'. "
+                "'여기서/현재 위치에서' 출발이면 origin을 생략 — 봇이 폰 GPS로 채운다. "
+                "특정 지명이면 origin='강남역'처럼 지정. "
                 "departure_time을 주면 그 미래 시각 교통량 기준으로 예측."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
-                    "origin": {"type": "string", "description": "출발지 지명/주소. 예: 강남역, 판교 카카오"},
+                    "origin": {"type": "string", "description": "출발지 지명/주소(선택). 생략 시 현재 위치(폰 GPS). 예: 강남역"},
                     "destination": {"type": "string", "description": "목적지 지명/주소"},
                     "priority": {"type": "string", "description": "RECOMMEND(기본)/TIME(최단시간)/DISTANCE(최단거리)"},
                     "departure_time": {"type": "string", "description": "미래 출발 시각 ISO datetime, e.g. 2026-06-07T09:00:00. 현재 이후만 유효. 생략 시 현재 기준"},
                 },
-                "required": ["origin", "destination"],
+                "required": ["destination"],
             },
             fn=get_directions,
         )

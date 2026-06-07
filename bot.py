@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 from core.audio_sink import CarAudioSink
 from core.orchestrator import Orchestrator, load_stt_hints
+from core.location_server import start_location_server
 from core.stt import STTEngine
 from core.tts import ElevenLabsTTS, speak, play_cue
 
@@ -196,6 +197,7 @@ capture_queue: asyncio.Queue = asyncio.Queue()
 async def on_ready():
     print(f"Bot ready: {bot.user}")
     await orchestrator.start()
+    await start_location_server(_cfg.get("location", {}).get("port", 8765))
     voice_watchdog.start()
     asyncio.create_task(audio_processor())
 

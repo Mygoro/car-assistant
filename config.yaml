@@ -58,3 +58,8 @@ tool_use:
   # 티어2: 최종 답변 turn을 스트리밍해 voice를 긴 text 기다리지 않고 즉시 발화(지연 절감).
   # 불안정하면 false로 두면 기존 complete 경로로 즉시 강등.
   stream_final: true
+
+# 폰 GPS 수신 서버 (core/location_server.py). 폰에서 cloudflared https URL로 접속해
+# 현재 위치를 실시간 전송 → "근처/여기서"가 현재 좌표 기준으로 동작.
+location:
+  port: 8765

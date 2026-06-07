@@ -9,10 +9,18 @@ import re
 
 import httpx
 
+from ..location import get_current
+
 log = logging.getLogger(__name__)
 
 _KAKAO_BASE = "https://dapi.kakao.com"
 _NAVI_BASE = "https://apis-navi.kakaomobility.com"
+
+# 출발지가 "현재 위치"를 가리키는 표현 — 폰 GPS 좌표를 직접 사용(geocode 스킵).
+_HERE_WORDS = {
+    "현재위치", "현재 위치", "여기", "여기서", "내 위치", "내위치",
+    "지금 위치", "지금위치", "현 위치", "내 자리", "현재 자리",
+}
 
 
 def _headers() -> dict:
@@ -46,6 +54,12 @@ async def search_nearby_places(args: dict) -> str:
     lon = args.get("lon")
     lat = args.get("lat")
     radius = args.get("radius_m", 5000)
+
+    # 좌표 미지정 시 폰 GPS(현재 위치)로 폴백 — "근처/여기" 발화를 현재 좌표 기준으로.
+    if lon is None or lat is None:
+        here = get_current()
+        if here:
+            lon, lat = here
 
     params = {"query": query, "size": 5}
     has_coord = lon is not None and lat is not None
@@ -169,8 +183,14 @@ async def get_directions(args: dict) -> str:
     dest_name = args.get("destination")
     priority = args.get("priority", "RECOMMEND")
     departure_raw = args.get("departure_time")
-    if not origin_name or not dest_name:
-        return "[error] origin, destination이 필요합니다."
+    if not dest_name:
+        return "[error] destination이 필요합니다."
+
+    # 출발지가 "현재 위치"류이거나 비어 있으면 폰 GPS 사용(geocode 스킵).
+    use_here = (not origin_name) or origin_name.strip() in _HERE_WORDS
+    here = get_current() if use_here else None
+    if use_here and here is None:
+        return "현재 위치를 아직 못 받았어요. 출발지를 말씀해 주시거나 폰에서 위치 공유를 켜주세요."
 
     departure_time = None
     if departure_raw:
@@ -180,14 +200,17 @@ async def get_directions(args: dict) -> str:
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            origin = await _geocode(client, origin_name)
-            if origin is None:
-                return f"출발지 '{origin_name}'을(를) 찾을 수 없습니다."
+            if here is not None:
+                o_lon, o_lat, o_label = here[0], here[1], "현재 위치"
+            else:
+                origin = await _geocode(client, origin_name)
+                if origin is None:
+                    return f"출발지 '{origin_name}'을(를) 찾을 수 없습니다."
+                o_lon, o_lat, o_label = origin
             dest = await _geocode(client, dest_name)
             if dest is None:
                 return f"목적지 '{dest_name}'을(를) 찾을 수 없습니다."
 
-            o_lon, o_lat, o_label = origin
             d_lon, d_lat, d_label = dest
 
             params = {
