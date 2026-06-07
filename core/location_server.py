@@ -69,11 +69,29 @@ async def _post_loc(req: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def _get_loc(req: web.Request) -> web.Response:
+    """쿼리 파라미터로 좌표 수신 — GPSLogger·Tasker 등 백그라운드 앱용.
+
+    예: GET /loc?lat=37.4979&lon=127.0276&accuracy=12
+    (GPSLogger custom URL: .../loc?lat=%LAT&lon=%LON&accuracy=%ACC)
+    """
+    q = req.query
+    try:
+        lat = float(q["lat"])
+        lon = float(q["lon"])
+        acc = float(q["accuracy"]) if q.get("accuracy") else None
+    except (ValueError, KeyError, TypeError) as e:
+        return web.Response(text=f"need lat & lon ({e})", status=400)
+    location.set_current(lat, lon, acc)
+    return web.Response(text="OK")
+
+
 async def start_location_server(port: int = 8765) -> web.AppRunner:
     """봇 시작 시 1회 호출. 같은 이벤트 루프에 위치 수신 서버를 띄운다."""
     app = web.Application()
     app.router.add_get("/", _index)
     app.router.add_post("/loc", _post_loc)
+    app.router.add_get("/loc", _get_loc)   # GPSLogger·Tasker 등 백그라운드 앱(쿼리 방식)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
