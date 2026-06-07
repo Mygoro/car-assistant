@@ -791,13 +791,13 @@ class Orchestrator:
                 asst_blocks = _serialize_assistant_blocks(resp.content)
                 messages.append(Message("assistant", asst_blocks))
 
-                # 툴 호출 — 같은 iteration의 다중 tool_use는 병렬 실행(순서 보존)
+                # 툴 호출 — 같은 iteration의 다중 tool_use는 순차 실행.
+                # (병렬 gather는 Google 캘린더/MCP 같은 비동시성-안전 공유 클라이언트에서
+                #  같은 SSL 연결을 동시에 건드려 RECORD_LAYER_FAILURE·하드 크래시를 유발했다.)
                 tu_blocks = [b for b in resp.content if b.type == "tool_use"]
-                results = await asyncio.gather(
-                    *(self._call_tool_safe(b.name, b.input) for b in tu_blocks)
-                )
                 tool_results = []
-                for block, result in zip(tu_blocks, results):
+                for block in tu_blocks:
+                    result = await self._call_tool_safe(block.name, block.input)
                     if block.name in _PLACE_TOOLS:
                         place_names |= _extract_place_names(block.name, result)
                     tool_results.append({
@@ -870,12 +870,11 @@ class Orchestrator:
                     yield "filler", "searching"
                     filler_sent = True
                 messages.append(Message("assistant", _serialize_assistant_blocks(final.content)))
+                # 순차 실행(공유 클라이언트 동시 호출 크래시 방지 — 위 _tool_voice_first 주석 참조)
                 tu_blocks = [b for b in final.content if b.type == "tool_use"]
-                results = await asyncio.gather(
-                    *(self._call_tool_safe(b.name, b.input) for b in tu_blocks)
-                )
                 tool_results = []
-                for block, result in zip(tu_blocks, results):
+                for block in tu_blocks:
+                    result = await self._call_tool_safe(block.name, block.input)
                     if block.name in _PLACE_TOOLS:
                         place_names |= _extract_place_names(block.name, result)
                     tool_results.append({
