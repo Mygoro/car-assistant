@@ -738,18 +738,20 @@ class Orchestrator:
                 asst_blocks = [b.model_dump() for b in resp.content]
                 messages.append(Message("assistant", asst_blocks))
 
-                # 툴 호출
+                # 툴 호출 — 같은 iteration의 다중 tool_use는 병렬 실행(순서 보존)
+                tu_blocks = [b for b in resp.content if b.type == "tool_use"]
+                results = await asyncio.gather(
+                    *(self._call_tool_safe(b.name, b.input) for b in tu_blocks)
+                )
                 tool_results = []
-                for block in resp.content:
-                    if block.type == "tool_use":
-                        result = await self._call_tool_safe(block.name, block.input)
-                        if block.name in _PLACE_TOOLS:
-                            place_names |= _extract_place_names(block.name, result)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result,
-                        })
+                for block, result in zip(tu_blocks, results):
+                    if block.name in _PLACE_TOOLS:
+                        place_names |= _extract_place_names(block.name, result)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
+                    })
 
                 messages.append(Message("user", tool_results))
 

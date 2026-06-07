@@ -53,9 +53,12 @@ The downstream system will skip TTS and chat posting when both fields are empty.
 
 ## text_response rules
 
-- No length limit. This is the durable record.
-- Include everything that voice_response had to drop: sources, alternative
-  options, side notes, raw tool outputs the user might want to revisit.
+- The durable record — but keep it tight. No hard length limit, yet do not pad:
+  every line should add information worth revisiting.
+- Include what voice_response had to drop: sources, alternative options, key
+  side notes. Do NOT dump raw multi-day tables — for opening hours give today's
+  hours plus open/closed; list the full week ONLY if the user asks.
+- Do not repeat the same fact in more than one form.
 - Markdown OK. Lists, tables, links OK.
 - Same factual content as voice_response — never contradict the spoken reply.
 - If a tool call was made, include the tool name and a short summary of what

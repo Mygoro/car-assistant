@@ -9,6 +9,7 @@ GOOGLE_MAPS_API_KEY 환경변수 없으면 stub 응답.
 """
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -103,10 +104,17 @@ async def get_place_details(args: dict) -> str:
         if phone:
             lines.append(f"전화: {phone}")
 
+        # 음성 어시스턴트는 보통 '오늘' 영업시간만 필요. 7일 전체를 반환하면 매 tool 루프
+        # iteration마다 uncached 재전송돼 지연·토큰을 키우고 모델이 7일을 echo한다. 오늘 1줄만.
         hours = p.get("regularOpeningHours", {}).get("weekdayDescriptions", [])
         if hours:
-            lines.append("영업시간:")
-            lines.extend(f"  {h}" for h in hours)
+            wk = ["월", "화", "수", "목", "금", "토", "일"][
+                datetime.now(timezone(timedelta(hours=9))).weekday()
+            ]
+            today = next((h for h in hours if h.startswith(f"{wk}요일")), None)
+            if today:
+                lines.append(f"오늘 영업시간: {today}")
+            lines.append("(요일별 전체 영업시간은 필요하면 다시 요청)")
 
         reviews = p.get("reviews", [])
         if reviews:
