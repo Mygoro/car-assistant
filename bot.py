@@ -20,7 +20,7 @@ from discord.ext.voice_recv.utils import add_wrapped as _add_wrapped
 from dotenv import load_dotenv
 
 from core.audio_sink import CarAudioSink
-from core.orchestrator import Orchestrator
+from core.orchestrator import Orchestrator, load_stt_hints
 from core.stt import STTEngine
 from core.tts import ElevenLabsTTS, speak, play_cue
 
@@ -56,12 +56,21 @@ wake_detector: WakeWordDetector = WakeWordDetector(
     threshold=_cfg["wake_word"]["threshold"],
 )
 
+# config의 정적 고유명사 + memory.md의 사용자 고유명사(수업·지명 등) 병합 →
+# Whisper가 고유명사를 덜 틀리게 한다(STT 2차 보정). memory.md가 단일 출처.
+_stt_terms = []
+for _part in f"{_cfg['stt']['initial_prompt']}, {load_stt_hints()}".split(","):
+    _t = _part.strip()
+    if _t and _t not in _stt_terms:   # 중복 제거(config·memory 겹침 대비)
+        _stt_terms.append(_t)
+_stt_prompt = ", ".join(_stt_terms)
+
 stt = STTEngine(
     model_size=_cfg["stt"]["model_size"],
     device=_cfg["stt"]["device"],
     compute_type=_cfg["stt"]["compute_type"],
     language=_cfg["stt"]["language"],
-    initial_prompt=_cfg["stt"]["initial_prompt"],
+    initial_prompt=_stt_prompt,
 )
 
 orchestrator = Orchestrator(

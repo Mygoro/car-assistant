@@ -113,6 +113,22 @@ def _load_memory() -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+_STT_HINTS_RE = re.compile(r"stt-hints\s*:\s*(.+)")
+
+
+def load_stt_hints() -> str:
+    """memory.md의 'stt-hints:' 라인(주석 안)에서 고유명사 목록을 추출.
+
+    Whisper initial_prompt에 병합해 STT 단계에서 고유명사 오인식을 줄인다.
+    memory.md가 단일 출처라 학기·관심사 갱신 시 한 곳만 고치면 STT도 따라온다.
+    """
+    p = Path("core/memory.md")
+    if not p.exists():
+        return ""
+    m = _STT_HINTS_RE.search(p.read_text(encoding="utf-8"))
+    return m.group(1).strip() if m else ""
+
+
 def build_system_prompt() -> str:
     template = Path("core/system_prompt_template.txt").read_text(encoding="utf-8")
     memory = _load_memory()

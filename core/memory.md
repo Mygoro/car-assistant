@@ -33,3 +33,8 @@
 - 길이 예산 ≤50줄. 휘발성 진행상태("Phase X 중")는 박지 말 것.
 - 전시 데모: OTTO_PROFILE=exhibition 으로 실행 → 오버레이 미로드 + [개인전용] 제거.
 -->
+
+<!-- stt-hints (Whisper 고유명사 보정용 한 줄. build가 주석을 제거하므로 LLM엔 안 가고
+STT initial_prompt에만 병합됨. 학기·관심사 바뀌면 본문과 함께 여기도 갱신):
+stt-hints: AI Agents, ISM, RDQM, IT Foundation, Freshman Writing, 기독교와세계문화, 송도 국제캠퍼스, 아반떼, TMAP, 여자친구
+-->
