@@ -18,20 +18,66 @@ Byunghun Kwon · 2022195171
 - **분기 통합 완료** (2026-06-05) — `feat/tts-latency-ws-overlap`(GPU+TTS)와 `master`(Phase 6)가 `1270302`에서 분기돼 있던 것을 master로 통합. **이후 master에서 작업.**
 - **Phase 6 완료** (2026-06-06) — Notion·Calendar·Hyundai·KakaoMap + web_search(Brave) + Google Places(get_place_details). E2E 라우팅 검증 통과.
 - **Phase 7/8 신규 정의** (2026-06-06) — 7: 컨텍스트 오케스트레이션 & 페르소나 / 8: 품질 하드닝. 구 7(아카이브)·8(폴백)은 부록으로 이동.
-- **다음 작업**: Phase 7 착수 (memory.md 사용자 컨텍스트 + 소스 라우팅 판단원칙 + 맥락 통합)
+- **Phase 7 진행** (2026-06-07) — ① memory.md 베이스+프로파일 게이팅 완료, ② 소스 라우팅 완료,
+  ③ 맥락 통합 프롬프트(근거가드+멀티소스 few-shot) 반영. **사적·데이트 맥락은 전면 제거**(전시용·사용자 요청).
+- **tool 경로 지연 최적화** (2026-06-07) — 티어1(출력 축약)+티어2(최종 turn 스트리밍). 긴 답변 첫소리 ~45~52%↓.
+  크래시 2종 수정(parsed_output 400, 캘린더 동시쓰기 SSL). 미해결: 캘린더 read 비대→truncation 재조회.
+- **다음 작업**: 캘린더 출력 슬림화(아래 시작 지점). 이후 Phase 8 품질 하드닝.
 - **개발 환경**: 데스크탑(NVIDIA RTX 5070 Ti) 이식 완료. 노트북은 CPU-only 개발용
-- **전시 일정**: **2026-06-09 전시**
+- **전시 일정**: **2026-06-09 전시** (D-2)
 
 ---
 
-### ⚡ 다음 세션 시작 지점 (2026-06-06 이후)
+### ⚡ 다음 세션 시작 지점 (2026-06-07 이후)
 
-**Phase 7 — 컨텍스트 오케스트레이션 & 페르소나 (신규)**
+**1) 캘린더 출력 슬림화 (지연 절감 마무리 — 진단 완료, 미구현)**
+- 증상: "올해 일정" 류가 `get_calendar_events`를 2회 호출(3 iteration). 원인은 프롬프트가 아니라
+  **결과 비대→truncation**. 한 줄이 `[이메일::60자 event_id] 날짜: 제목`이라 id·이메일이 줄의 ~75%.
+  1년치가 `max_result_chars=6000`을 넘겨 잘림 → 모델이 뒷 범위를 재조회.
+- 권장(C): `core/native_tools/calendar.py` read 줄 슬림화(`[cid::id]`→`[id]`, 반복 이메일 제거) +
+  캘린더 결과는 truncation 예외(캘린더는 maxResults=20/캘린더로 상한 있음, 노션 강의 본문과 다름).
+  목표: 1년치 1회·미절단 → 그 류 질의 3→2 iteration.
+- 부수: 맥락 재사용 프롬프트는 모델이 잘 안 따름(매 턴 재조회) — 슬림화로 결과가 온전해지면 개선 기대.
 
-- `core/memory.md`에 사용자 컨텍스트(이름·차량·반복 맥락·어투·FAQ) 작성 → 매 세션 재입력 제거
-- 시스템 프롬프트에 **소스 라우팅 판단원칙** 명문화: 개인정보·일정→노션/캘린더, 위치·거리→카카오, 영업시간·평점·리뷰→Places, 일반·최신→Brave, 차량→Hyundai. 복합질의는 조합.
-- **맥락 통합(구 이슈 5)**: 노션 맥락(예: 여자친구 데이트)을 후속 장소추천에 엮어 특화 답변
-- 상세: `docs/implementation-manual.md` Phase 7. 미뤄둔 것: 같은 문서 "보류 항목" 절.
+**2) 이후 Phase 8 품질 하드닝** — grounding 관측 로그(`[GROUND]`)·회귀 묶음(238케이스) 이미 일부 반영.
+상세: `docs/implementation-manual.md` Phase 8 / 보류 항목.
+
+---
+
+### 2026-06-07 작업 로그 (Phase 7③ + 사적맥락 제거 + tool 지연 최적화 + 크래시 2종)
+
+**Phase 7① memory.md + 게이팅 / ③ 맥락 통합**
+- memory.md 비민감 베이스 + `core/memory.local.md`(gitignore) 민감 오버레이 분리. `_load_memory`가
+  `OTTO_PROFILE=exhibition`이면 오버레이 미로드 + `[개인전용]` 줄 제거(안전망). `bot.py --profile` 추가
+  (문서엔 있었으나 코드에 파싱이 없어 fail-open이던 구멍 차단). 시작 배너로 프로파일 육안 확인.
+- ③ 맥락 통합: system_prompt에 "추천 이유 근거 가드"(분위기 등 주관 주장은 툴 결과가 뒷받침할 때만) +
+  멀티소스 few-shot 추가.
+- **사적·데이트 맥락 전면 제거**(사용자 강한 요청 — 전시용, 데이트 추천 불필요): memory.md 여자친구 줄,
+  local 오버레이, orphan(`memory_exhibition.md`/`strip_personal.py`), update_prompt·manual의 예시까지.
+  선호를 프로젝트 메모리에 기록([[no-personal-context-in-assistant]]).
+
+**tool 경로 지연 최적화 (지연의 82~94%가 최종답 LLM 토큰 생성, r≈0.82)**
+- 티어1: `get_place_details` 7일 영업시간 테이블→오늘 1줄+평점. text_response 간결화 프롬프트.
+- 티어2: `anthropic.stream_tools` + `_tool_voice_streaming` — 최종 turn에서 voice_response가 닫히는
+  즉시 발화(긴 text와 병렬). `tool_use.stream_final` 토글 + 예외 시 complete 폴백. bot/TTS 무변경.
+  **실측: 긴 답변 첫소리 ~45~52%↓**(18.4s→8.8s, 30.9s→17.0s), 단일 iteration 2.2s.
+
+**크래시 2종 (티어2 도입 중 발생, 둘 다 수정)**
+- parsed_output 400: `messages.stream().get_final_message()`가 text 블록에 붙이는 `parsed_output`을
+  model_dump로 재전송 → 거부. `_serialize_assistant_blocks`로 허용 필드만 직렬화.
+- 캘린더 동시쓰기 SSL 크래시: 티어1에서 넣은 `asyncio.gather`가 calendar.py의 전역 싱글톤 `_service`
+  (공유 SSL 소켓)를 두 스레드에서 동시 호출 → `RECORD_LAYER_FAILURE` → C레벨 하드 크래시(try/except로도
+  못 잡음). **다중 tool_use 순차 실행으로 복원**(병렬 이득 ~1s, 크래시 유발이라 버림).
+
+**프롬프트 round-trip 최소화 (부분 성공)** — 범위 분할·재조회·과다 details 억제 지시. "올해 일정"이
+4→3 iteration으로 줆. **남은 병목은 프롬프트가 아니라 캘린더 출력 비대→truncation 재조회**(다음 시작 지점).
+
+**인사이트**: ① 음성 지연의 본질은 "최종 답 길이"라 스트리밍(짧은 voice 선발화)이 가장 효과적, 단 tool
+iteration 왕복은 못 줄임. ② 동시성 최적화(gather)는 공유·비동시성-안전 클라이언트(Google/MCP)에선 크래시
+유발 — 순차가 답. ③ 프롬프트 유도엔 한계가 있고, 구조적 비대(거대 event_id)는 코드로 잘라야 한다.
+
+커밋: `4d03e86`(③+사적제거) · `7883f2f`(티어1) · `9dbff78`(티어2) · `ca5decf`(parsed_output) ·
+`9388a38`(순차복원) · `ac7101c`(round-trip) + 사용자 작업(`full` 길이컷·`[GROUND]`·회귀묶음 등).
 
 ---
 
